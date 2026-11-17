@@ -13,7 +13,8 @@ class ConversationBuilder
   def look_up_exising_conversation
     return unless @contact_inbox.inbox.lock_to_single_conversation?
 
-    @contact_inbox.conversations.last
+    # Shekel fork: only a conversation the agent can see is reused; otherwise a new one is started.
+    Shekel::ConversationVisibility.scope(user: Current.user, account: @contact_inbox.inbox.account, relation: @contact_inbox.conversations).last
   end
 
   def create_new_conversation
