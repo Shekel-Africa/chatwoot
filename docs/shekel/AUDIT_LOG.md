@@ -26,6 +26,7 @@ of those made the change; empty for the system, e.g. a snooze expiring), `action
 | `conversation.transcript_sent` | transcript emailed | `ConversationsController#transcript` (via `Shekel::ConversationAuditHooks`) | `display_id` (never the address) |
 | `contacts.exported` | contacts export queued | `ContactsController#export` (via `Shekel::ContactAuditHooks`), `DataExportsController#create` / `#rerun` | `data_export_id`, `data_type` |
 | `data_export.downloaded` | the export file's download URL is handed out (the actual retrieval) | `DataExportsController#download` | `data_export_id`, `data_type` |
+| `data_import.downloaded` | an import's error log, skip log or rejected-rows file downloaded (they can hold contact details) | `DataImportsController#error_logs` / `#skip_logs` / `#rejected_rows` (via `Shekel::DataImportAuditHooks`) | `data_import_id`, `kind` (`error_logs`, `skip_logs`, `rejected_rows`) |
 | `csat.exported` | CSAT responses downloaded as CSV | `CsatSurveyResponsesController#download` | `since`, `until` (epoch seconds), `user_ids`, `inbox_id`, `team_id`, `rating` (filters as sent) |
 | `audit.exported` | this log downloaded as CSV | `Shekel::AuditEventsController#index` | `from`, `to` |
 
@@ -63,8 +64,6 @@ open), and a failed view write releases its throttle key. If Redis is unavailabl
 - `GET /api/v2/accounts/:id/reports/{agents,inboxes,labels,teams,conversations_summary,conversation_traffic}`
   CSVs: aggregate counts and timings per agent, inbox, label, team or hour, with no message
   content and no contact or per-conversation rows.
-- `GET /api/v1/accounts/:id/data_imports/:id/{error_logs,skip_logs,rejected_rows}`: diagnostics
-  of an import, over data the administrator uploaded themselves.
 - Password sign-ins (super admins); staff sign in through OIDC (`staff.signed_in`).
 
 ## Exporting

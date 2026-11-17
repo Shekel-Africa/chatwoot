@@ -14,7 +14,7 @@ class Shekel::AuditEvent < ApplicationRecord
     conversation.assigned conversation.team_changed
     conversation.resolved conversation.reopened
     conversation.transcript_sent
-    contacts.exported data_export.downloaded csat.exported audit.exported
+    contacts.exported data_export.downloaded data_import.downloaded csat.exported audit.exported
   ].freeze
 
   validates :action, inclusion: { in: ACTIONS }

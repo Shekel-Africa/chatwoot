@@ -149,6 +149,55 @@ RSpec.describe 'Shekel audit log call sites', type: :request do
     end
   end
 
+  describe 'data_import.downloaded' do
+    let(:data_import) { create(:data_import, :intercom, account: account, initiated_by: admin) }
+    let(:import_url) { "/api/v1/accounts/#{account.id}/data_imports/#{data_import.id}" }
+
+    before { account.enable_features!('data_import') }
+
+    def expect_download_recorded(kind)
+      expect(response).to have_http_status(:ok)
+      expect(audit_events('data_import.downloaded').sole).to have_attributes(
+        account_id: account.id, actor_type: 'User', actor_id: admin.id, subject_type: 'DataImport', subject_id: data_import.id,
+        metadata: { 'data_import_id' => data_import.id, 'kind' => kind }
+      )
+    end
+
+    it 'is recorded for the error log' do
+      get "#{import_url}/error_logs.csv", headers: admin.create_new_auth_token
+
+      expect_download_recorded('error_logs')
+    end
+
+    it 'is recorded for the skip log' do
+      get "#{import_url}/skip_logs.csv", headers: admin.create_new_auth_token
+
+      expect_download_recorded('skip_logs')
+    end
+
+    it 'is recorded for the rejected rows file' do
+      data_import.failed_records.attach(io: StringIO.new("email\n"), filename: 'rejected.csv', content_type: 'text/csv')
+
+      get "#{import_url}/rejected_rows", headers: admin.create_new_auth_token
+
+      expect_download_recorded('rejected_rows')
+    end
+
+    it 'is not recorded when there are no rejected rows' do
+      get "#{import_url}/rejected_rows", headers: admin.create_new_auth_token
+
+      expect(response).to have_http_status(:not_found)
+      expect(audit_events('data_import.downloaded')).to be_empty
+    end
+
+    it 'is not recorded when the download is refused' do
+      get "#{import_url}/error_logs.csv", headers: agent.create_new_auth_token
+
+      expect(response).to have_http_status(:unauthorized)
+      expect(audit_events('data_import.downloaded')).to be_empty
+    end
+  end
+
   describe 'agent bot actions' do
     let(:agent_bot) { create(:agent_bot, account: account) }
     let(:bot_headers) { { api_access_token: agent_bot.access_token.token } }

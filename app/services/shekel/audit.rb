@@ -17,7 +17,7 @@ module Shekel::Audit
   METADATA_KEYS = %w[
     display_id message_id from_assignee_id to_assignee_id from_team_id to_team_id
     from_status to_status data_export_id data_type from to provider
-    since until user_ids inbox_id team_id rating
+    since until user_ids inbox_id team_id rating data_import_id kind
   ].freeze
   VIEW_THROTTLE = 1.hour
   REDIS_ERRORS = [Redis::BaseError, ConnectionPool::Error, ConnectionPool::TimeoutError].freeze

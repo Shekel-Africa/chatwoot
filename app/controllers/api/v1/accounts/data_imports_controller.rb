@@ -208,3 +208,6 @@ class Api::V1::Accounts::DataImportsController < Api::V1::Accounts::BaseControll
     end
   end
 end
+
+# Shekel fork: audit log (data_import.downloaded).
+Api::V1::Accounts::DataImportsController.include(Shekel::DataImportAuditHooks)
