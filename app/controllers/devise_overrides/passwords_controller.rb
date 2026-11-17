@@ -7,7 +7,7 @@ class DeviseOverrides::PasswordsController < Devise::PasswordsController
 
   skip_before_action :require_no_authentication, raise: false
   skip_before_action :authenticate_user!, raise: false
-  before_action :refuse_shekel_password_reset, only: [:create, :update]
+  before_action :refuse_shekel_password_management, only: [:create, :update]
 
   def create
     unless params[:redirect_url].nil? || params[:redirect_url].is_a?(String)

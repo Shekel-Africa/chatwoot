@@ -110,6 +110,21 @@ RSpec.describe Shekel::StaffSync do
     expect(role_of(user)).to eq('administrator')
   end
 
+  it 'retries once when a concurrent first sign-in wins the insert' do
+    calls = 0
+    allow(User).to receive(:from_email).and_wrap_original do |original, *args|
+      calls += 1
+      raise ActiveRecord::RecordNotUnique, 'duplicate key value' if calls == 1
+
+      original.call(*args)
+    end
+
+    user = sync
+
+    expect(user).to be_persisted
+    expect(calls).to eq(2)
+  end
+
   it 'matches an existing user by email case-insensitively and keeps their password' do
     existing = create(:user, email: email)
     encrypted_password = existing.encrypted_password

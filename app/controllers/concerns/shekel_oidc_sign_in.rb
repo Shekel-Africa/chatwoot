@@ -8,8 +8,9 @@
 # The strategy has already checked the ID token's signature (RS256), issuer,
 # audience and nonce. The `realm` claim is checked again here so that a client
 # pointed at the customer (user) realm by mistake can never sign a dealer in as
-# staff. authentication-api refuses the sign-in outright without the
-# `customer_comms.access` scope, so reaching this callback implies it.
+# staff. The granted scope must include `customer_comms.access`: the IdP refuses
+# without it only when the client lists it as required, so it is checked here
+# too, or any admin-realm admin would be provisioned.
 #
 # The check has to happen in `redirect_callbacks`: devise_token_auth copies the
 # auth hash into the session there *without* `extra` (where the ID-token claims
@@ -27,9 +28,10 @@ module ShekelOidcSignIn
 
     session.delete(REALM_VERIFIED_KEY)
     auth = request.env['omniauth.auth']
-    return redirect_to login_page_url(error: 'no-account-found') unless shekel_admin_realm?(auth)
+    return redirect_to login_page_url(error: 'no-account-found') unless shekel_staff_sign_in_allowed?(auth)
+    return redirect_to login_page_url(error: 'shekel-misconfigured') if shekel_staff_account.blank?
 
-    session[REALM_VERIFIED_KEY] = { 'tenants' => shekel_tenant_ids(auth), 'admin' => shekel_crm_admin?(auth) }
+    session[REALM_VERIFIED_KEY] = { 'tenants' => shekel_tenant_ids(auth), 'admin' => shekel_comms_admin?(auth) }
     super
     # The second hop needs only `info`; dropping the tokens keeps the cookie
     # session small now that the ID token carries the tenants claim.
@@ -47,8 +49,11 @@ module ShekelOidcSignIn
     verified = session.delete(REALM_VERIFIED_KEY)
     return redirect_to login_page_url(error: 'no-account-found') unless verified.is_a?(Hash)
 
+    account = shekel_staff_account
+    return redirect_to login_page_url(error: 'shekel-misconfigured') if account.blank?
+
     @resource = Shekel::StaffSync.new(
-      account: Account.find(Shekel::OidcSettings.account_id),
+      account: account,
       email: auth_hash.dig('info', 'email'),
       name: auth_hash.dig('info', 'name'),
       tenant_ids: verified['tenants'],
@@ -58,8 +63,25 @@ module ShekelOidcSignIn
     sign_in_user
   end
 
+  def shekel_staff_sign_in_allowed?(omniauth_auth)
+    shekel_admin_realm?(omniauth_auth) &&
+      shekel_granted_scopes(omniauth_auth).include?(Shekel::OidcSettings::ACCESS_SCOPE) &&
+      omniauth_auth.dig('info', 'email').present?
+  end
+
   def shekel_admin_realm?(omniauth_auth)
     omniauth_auth&.dig('extra', 'raw_info', 'realm') == ADMIN_REALM
+  end
+
+  # The account staff are provisioned into, or nil (logged) when
+  # SHEKEL_CHATWOOT_ACCOUNT_ID is unset or names no account.
+  def shekel_staff_account
+    account = Account.find_by(id: Shekel::OidcSettings.account_id)
+    Rails.logger.error('Shekel OIDC: SHEKEL_CHATWOOT_ACCOUNT_ID names no account') if account.nil?
+    account
+  rescue KeyError, ArgumentError
+    Rails.logger.error('Shekel OIDC: SHEKEL_CHATWOOT_ACCOUNT_ID is not set or not an integer')
+    nil
   end
 
   # Tenant ids from the `tenants` claim, or nil when the claim is absent (an
@@ -74,7 +96,12 @@ module ShekelOidcSignIn
     Array(tenants).filter_map { |tenant| tenant.is_a?(Hash) ? tenant['id'].to_s.downcase.presence : nil }
   end
 
-  def shekel_crm_admin?(omniauth_auth)
-    omniauth_auth.dig('credentials', 'scope').to_s.split.include?(Shekel::OidcSettings::ADMIN_SCOPE)
+  def shekel_comms_admin?(omniauth_auth)
+    shekel_granted_scopes(omniauth_auth).include?(Shekel::OidcSettings::ADMIN_SCOPE)
+  end
+
+  # The token response's `scope` (space-separated), exposed by the strategy as credentials.scope.
+  def shekel_granted_scopes(omniauth_auth)
+    omniauth_auth.dig('credentials', 'scope').to_s.split
   end
 end

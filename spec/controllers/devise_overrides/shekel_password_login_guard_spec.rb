@@ -82,6 +82,38 @@ RSpec.describe 'Shekel password login guard', type: :request do
     end
   end
 
+  it 'registrations_password_update_is_refused' do
+    with_modified_env(**oidc_enabled) do
+      put '/auth', params: { password: 'Changed1!x', password_confirmation: 'Changed1!x' }, headers: user.create_new_auth_token, as: :json
+
+      expect_refused(:forbidden)
+      expect(user.reload.valid_password?('Password1!')).to be(true)
+    end
+  end
+
+  it 'registrations_sign_up_and_delete_are_refused' do
+    with_modified_env(**oidc_enabled) do
+      expect do
+        post '/auth', params: { email: 'new@shekel.test', password: 'Changed1!x', password_confirmation: 'Changed1!x' }, as: :json
+      end.not_to change(User, :count)
+      expect_refused(:forbidden)
+
+      delete '/auth', headers: user.create_new_auth_token, as: :json
+      expect_refused(:forbidden)
+      expect(User.exists?(user.id)).to be(true)
+    end
+  end
+
+  it 'leaves the registrations routes as upstream when shekel oidc is disabled' do
+    with_modified_env(SHEKEL_OIDC_CLIENT_ID: nil) do
+      # Upstream lets a session token set a new password without the current one.
+      put '/auth', params: { password: 'Changed1!x', password_confirmation: 'Changed1!x' }, headers: user.create_new_auth_token, as: :json
+
+      expect(response).to have_http_status(:success)
+      expect(user.reload.valid_password?('Changed1!x')).to be(true)
+    end
+  end
+
   it 'api_access_token_requests_are_unaffected' do
     with_modified_env(**oidc_enabled) do
       get '/api/v1/profile', headers: { api_access_token: user.access_token.token }, as: :json

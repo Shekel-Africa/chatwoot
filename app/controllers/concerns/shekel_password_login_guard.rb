@@ -22,8 +22,8 @@ module ShekelPasswordLoginGuard
     render_shekel_password_login_disabled(:unauthorized) if shekel_password_auth_attempt?(email, sso_auth_token: params[:sso_auth_token])
   end
 
-  # POST and PUT /auth/password
-  def refuse_shekel_password_reset
+  # POST and PUT /auth/password; POST, PUT/PATCH and DELETE /auth (registrations)
+  def refuse_shekel_password_management
     render_shekel_password_login_disabled(:forbidden) if Shekel::OidcSettings.password_login_disabled?
   end
 

@@ -9,7 +9,8 @@
 #   are unknown (no claim), so team membership is not touched at all.
 # - Adds them to every inbox of the account.
 #
-# Safe to run on every sign-in.
+# Safe to run on every sign-in. Two concurrent first sign-ins for the same
+# person race on the inserts; the loser retries once and finds the winner's rows.
 class Shekel::StaffSync
   def initialize(account:, email:, name:, tenant_ids:, admin:)
     @account = account
@@ -20,7 +21,23 @@ class Shekel::StaffSync
   end
 
   def call
-    ActiveRecord::Base.transaction do
+    attempts = 0
+    begin
+      attempts += 1
+      sync
+    rescue ActiveRecord::RecordNotUnique
+      raise if attempts > 1
+
+      retry
+    end
+  end
+
+  private
+
+  # A savepoint, so a unique violation rolls back only this attempt even when
+  # the caller already holds a transaction.
+  def sync
+    ActiveRecord::Base.transaction(requires_new: true) do
       user = find_or_create_user
       sync_role(user)
       sync_teams(user) unless @tenant_ids.nil?
@@ -28,8 +45,6 @@ class Shekel::StaffSync
       user
     end
   end
-
-  private
 
   def find_or_create_user
     User.from_email(@email) || create_user

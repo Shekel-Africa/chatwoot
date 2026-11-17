@@ -168,6 +168,50 @@ RSpec.describe 'Shekel OIDC staff sign-in', type: :request do
       end
     end
 
+    it 'a_token_without_customer_comms_access_is_refused' do
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'stranger@shekel.test', scope: 'openid email profile tenants customer_comms.admin')
+
+        expect { expect_refused_at_first_hop }.not_to change(User, :count)
+      end
+    end
+
+    it 'a_blank_email_is_refused' do
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: '')
+
+        expect { expect_refused_at_first_hop }.not_to change(User, :count)
+      end
+    end
+
+    it 'a_missing_account_id_redirects_with_shekel_misconfigured' do
+      allow(Rails.logger).to receive(:error)
+
+      with_modified_env(**shekel_env, SHEKEL_CHATWOOT_ACCOUNT_ID: nil) do
+        mock_shekel_auth(email: 'stranger@shekel.test')
+
+        expect { get '/omniauth/shekel/callback' }.not_to change(User, :count)
+
+        expect(response).to redirect_to("#{frontend_url}/app/login?error=shekel-misconfigured")
+        expect(Rails.logger).to have_received(:error).with(/SHEKEL_CHATWOOT_ACCOUNT_ID/)
+      end
+    end
+
+    it 'an_account_id_that_names_no_account_redirects_with_shekel_misconfigured' do
+      allow(Rails.logger).to receive(:error)
+
+      with_modified_env(**shekel_env, SHEKEL_CHATWOOT_ACCOUNT_ID: (Account.maximum(:id).to_i + 1000).to_s) do
+        mock_shekel_auth(email: 'stranger@shekel.test')
+
+        get '/omniauth/shekel/callback'
+
+        expect(response).to redirect_to("#{frontend_url}/app/login?error=shekel-misconfigured")
+        # Nothing carried over: the second hop is still refused.
+        get '/auth/shekel/callback'
+        expect(response).to redirect_to("#{frontend_url}/app/login?error=no-account-found")
+      end
+    end
+
     it 'a_user_realm_token_with_tenants_is_still_refused' do
       with_modified_env(**shekel_env) do
         mock_shekel_auth(email: 'stranger@shekel.test', realm: 'user', tenants: [tenant_claim(tenant_id)], scope: admin_scope)
