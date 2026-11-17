@@ -76,6 +76,12 @@ RUN pnpm i
 
 COPY . /app
 
+# Shekel fork: community edition only. The enterprise code is removed from the
+# image (as upstream's CE build does) and switched off, so no enterprise
+# module can be prepended even if the directory comes back.
+RUN rm -rf enterprise spec/enterprise
+ENV DISABLE_ENTERPRISE=true CW_EDITION=ce
+
 # creating a log directory so that image wont fail when RAILS_LOG_TO_STDOUT is false
 # https://github.com/chatwoot/chatwoot/issues/701
 RUN mkdir -p /app/log
@@ -136,6 +142,10 @@ RUN apk update && apk add --no-cache \
 
 # Restrict libvips to its trusted image loaders when generating variants
 ENV VIPS_BLOCK_UNTRUSTED=1
+
+# Shekel fork: community edition only (see the pre-builder stage); ENV does not
+# carry across stages, so it is set again for the running image.
+ENV DISABLE_ENTERPRISE=true CW_EDITION=ce
 
 COPY --from=node /usr/local/bin/node /usr/local/bin/
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
