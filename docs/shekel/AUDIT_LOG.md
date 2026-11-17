@@ -69,7 +69,9 @@ open), and a failed view write releases its throttle key. If Redis is unavailabl
 
 ## Exporting
 
-Administrators of the account only:
+Administrators of the account only, with the token of a user listed in
+`SHEKEL_API_USER_IDS` (other personal tokens are refused in staff mode; see
+[OPERATIONS.md](OPERATIONS.md#environment-variables)):
 
 ```sh
 curl -H "api_access_token: $TOKEN" \

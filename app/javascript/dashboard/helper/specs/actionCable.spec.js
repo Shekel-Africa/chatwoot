@@ -153,6 +153,7 @@ describe('ActionCableConnector - Copilot Tests', () => {
     });
   });
 
+  // Shekel fork: team-scoped visibility.
   describe('shekel.conversation.hidden', () => {
     it('drops the conversation from the list and refreshes the stats', () => {
       store.$store.commit = vi.fn();

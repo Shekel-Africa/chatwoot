@@ -1,8 +1,8 @@
 # Shekel fork: devise_token_auth mounts sign-up (POST /auth), account update
 # (PUT/PATCH /auth, which sets a new password without the current one) and
 # account deletion (DELETE /auth). Nothing in Chatwoot's UI calls them, but they
-# are live routes; with Shekel sign-in configured they are refused, so no
-# password can be planted that would work once Shekel sign-in is turned off.
+# are live routes; in staff mode (Shekel::OidcSettings.staff_mode?) they are
+# refused, so no password can be planted that would work once staff mode is off.
 # Otherwise this is devise_token_auth's controller unchanged.
 class DeviseOverrides::RegistrationsController < DeviseTokenAuth::RegistrationsController
   include ShekelPasswordLoginGuard

@@ -1,13 +1,13 @@
 class DeviseOverrides::PasswordsController < Devise::PasswordsController
   include AuthHelper
   include MfaAuthenticationHelper
-  include ShekelPasswordLoginGuard
+  include ShekelPasswordLoginGuard # Shekel fork: no password reset in staff mode
 
   INVITATION_RESET_PASSWORD_WITHIN = 7.days
 
   skip_before_action :require_no_authentication, raise: false
   skip_before_action :authenticate_user!, raise: false
-  before_action :refuse_shekel_password_management, only: [:create, :update]
+  before_action :refuse_shekel_password_management, only: [:create, :update] # Shekel fork: ShekelPasswordLoginGuard
 
   def create
     unless params[:redirect_url].nil? || params[:redirect_url].is_a?(String)

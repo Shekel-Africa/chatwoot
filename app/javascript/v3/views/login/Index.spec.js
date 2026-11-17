@@ -129,6 +129,7 @@ describe('Shopify signup and password recovery', () => {
   });
 });
 
+// Shekel fork: Shekel is the only sign-in in staff mode.
 describe('Shekel staff mode', () => {
   const allowedLoginMethods = ['email', 'google_oauth', 'saml'];
 

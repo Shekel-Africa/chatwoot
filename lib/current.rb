@@ -15,6 +15,6 @@ module Current
     Current.executed_by = nil
     Current.contact = nil
     Current.inbox = nil
-    Current.shekel_visibility = nil
+    Current.shekel_visibility = nil # Shekel fork
   end
 end

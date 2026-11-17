@@ -5,14 +5,29 @@ in [LOCAL_OIDC_LOGIN.md](LOCAL_OIDC_LOGIN.md); the audit log is in [AUDIT_LOG.md
 
 ## Deploy order
 
-1. Deploy authentication-api #682 (the `customer_comms.*` scopes and the `tenants` claim).
-2. Reconfigure the staging OAuth client (allowed scopes `customer_comms.access
+1. Deploy authentication-api #682 (the `customer_comms.*` scopes and the `tenants` claim),
+   then run its post-deploy steps: `php artisan permissions:update-tenants` and clear the
+   `policies` cache, or the new permissions are not granted.
+2. In shekel-admin-fe, grant `customer_comms.access` (and `customer_comms.admin` to CRM
+   administrators) to the staff roles that use the CRM. Without it only `admin.admin`
+   holders can sign in, and they are made Chatwoot administrators.
+3. Reconfigure the OAuth client (allowed scopes `customer_comms.access
    customer_comms.admin`, required scope `customer_comms.access`); see
    [Register the OAuth client](LOCAL_OIDC_LOGIN.md#register-the-oauth-client-admin-portal).
    Until then every Shekel sign-in is refused.
-3. Deploy this fork, run migrations, then `bundle exec rails shekel:configure`.
-4. Map tenants to teams (below).
-5. Watch a few dry runs of the retention job, then turn the dry run off.
+4. Deploy this fork, run migrations, then `bundle exec rails shekel:configure`. Set
+   `SHEKEL_STAFF_HOSTS`, `SHEKEL_PUBLIC_HOST` and `SHEKEL_API_USER_IDS` (below) with the
+   rest of the environment. Production refuses to boot with `SHEKEL_CHATWOOT_ACCOUNT_ID`
+   set and `SHEKEL_OIDC_CLIENT_ID` blank.
+5. **Setting `SHEKEL_CHATWOOT_ACCOUNT_ID` turns staff mode on at once**: password sign-in,
+   Google, SAML and personal API tokens stop working on that restart. Before relying on it,
+   confirm one Shekel sign-in works end to end. The break-glass is a super admin
+   (`/super_admin`, its own Devise sign-in, not affected by staff mode); keep one.
+6. On the first deploy, clear `users.tokens` (`User.update_all(tokens: {})`) so sessions
+   issued before staff mode (two-month expiry) end and everyone signs in through Shekel.
+7. Map tenants to teams (below).
+8. Add a Sidekiq failure alert for `Shekel::RetentionJob` (dead or retried jobs on the `low`
+   queue), then watch a few dry runs of the retention job and turn the dry run off.
 
 ## Environment variables
 
@@ -21,9 +36,10 @@ Values live in the deployment's secret store, never in git.
 | Variable | Default | Meaning |
 |---|---|---|
 | `DISABLE_ENTERPRISE` | — | Must be `true` (any value disables enterprise, but use `true`). Community build only. |
-| `SHEKEL_OIDC_CLIENT_ID`, `SHEKEL_OIDC_CLIENT_SECRET`, `SHEKEL_OIDC_ISSUER`, `SHEKEL_OIDC_REDIRECT_URI`, `SHEKEL_OIDC_AUTHORIZE_URL`, `SHEKEL_OIDC_TOKEN_URL`, `SHEKEL_OIDC_USERINFO_URL`, `SHEKEL_OIDC_JWKS_URL`, `SHEKEL_OIDC_DISCOVERY` | — | Staff sign-in through authentication-api's admin realm. Setting the client id turns password sign-in off. Meanings in [LOCAL_OIDC_LOGIN.md](LOCAL_OIDC_LOGIN.md#environment-variables). |
-| `SHEKEL_CHATWOOT_ACCOUNT_ID` | — | The account staff are provisioned into. Required for sign-in, `shekel:*` tasks and the retention audit row. |
-| `SHEKEL_SESSION_LIFESPAN_HOURS` | `12` | Staff session length. Read at boot. |
+| `SHEKEL_OIDC_CLIENT_ID`, `SHEKEL_OIDC_CLIENT_SECRET`, `SHEKEL_OIDC_ISSUER`, `SHEKEL_OIDC_REDIRECT_URI`, `SHEKEL_OIDC_AUTHORIZE_URL`, `SHEKEL_OIDC_TOKEN_URL`, `SHEKEL_OIDC_USERINFO_URL`, `SHEKEL_OIDC_JWKS_URL`, `SHEKEL_OIDC_DISCOVERY` | — | Staff sign-in through authentication-api's admin realm. The client id shows the Shekel button. Meanings in [LOCAL_OIDC_LOGIN.md](LOCAL_OIDC_LOGIN.md#environment-variables). |
+| `SHEKEL_CHATWOOT_ACCOUNT_ID` | — | The account staff are provisioned into. Required for sign-in, `shekel:*` tasks and the retention audit row. **Setting it turns staff mode on**: team-scoped visibility, Shekel as the only sign-in (password, Google, SAML and non-Shekel SSO tokens refused), personal API tokens refused, 12-hour sessions. |
+| `SHEKEL_SESSION_LIFESPAN_HOURS` | `12` | Staff session length in staff mode. Read at boot. |
+| `SHEKEL_API_USER_IDS` | — | Comma-separated user ids whose personal API access token still works in staff mode: the Shailoq gateway's administrator service user (contact deletion on unlink). Every other user's token is refused and blanked in the user JSON; agent bot tokens are unaffected. |
 | `SHEKEL_STAFF_HOSTS` | — | Comma-separated bare hostnames staff use (the VPN host): only these get the dashboard, the API, sign-in, `/cable`, Active Storage, Sidekiq Web and `/health`. Normalised like `SHEKEL_PUBLIC_HOST` (case, port and trailing dots ignored). **Every other `Host`** (the public host, an IP, `localhost`, an empty or unknown `Host`) gets only `GET`/`POST /webhooks/whatsapp/<number>` and a bare 404 for everything else, so load-balancer and container health checks must send a staff `Host`. |
 | `SHEKEL_PUBLIC_HOST` | — | Bare public hostname Meta delivers webhooks to (scheme, path and port are stripped with a warning). It gets only the webhook paths, like any non-staff `Host`. The guard trusts `Host` only, never `X-Forwarded-Host`: the PUBLIC listener must force `Host` to the public hostname, or reject any request whose `Host` is not the public hostname, otherwise a request through public ingress with `Host: <vpn host>` bypasses the guard. Register Meta's callback URL without a trailing slash; the WhatsApp channel phone number must be digits with an optional leading `+`. The guard is off only when both this and `SHEKEL_STAFF_HOSTS` are unset (local dev); with only one set it logs a warning and still enforces (with no staff hosts, every `Host` is restricted). |
 | `SHEKEL_RETENTION_BOT_ONLY_DAYS` | `30` | Days of inactivity before a bot-only conversation is deleted. |
@@ -69,8 +85,10 @@ api_access_token: <administrator's access token>
 
 This deletes the contact and, in the background, its conversations and messages. It needs
 an **administrator user's** access token: `ContactPolicy#destroy?` allows administrators
-only, so an agent bot token (and an agent's) is refused. Keep that token in the gateway's
-secret store. The audit log is not touched.
+only, so an agent bot token (and an agent's) is refused. Use a dedicated administrator
+service user, list its id in `SHEKEL_API_USER_IDS` (other users' tokens are refused in staff
+mode) and keep its token in the gateway's secret store. It never signs in through Shekel, so
+its token is not rotated. The audit log is not touched.
 
 ## Retention
 
@@ -104,7 +122,8 @@ it to `false` and restart Sidekiq. Deletion is irreversible.
 
 ## Audit export
 
-Administrators of the account export the log as CSV:
+Administrators of the account export the log as CSV, with the token of a user in
+`SHEKEL_API_USER_IDS` (personal tokens are refused otherwise in staff mode):
 
 ```sh
 curl -H "api_access_token: $TOKEN" \

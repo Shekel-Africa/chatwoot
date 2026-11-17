@@ -15,6 +15,7 @@ import { VOICE_CALL_PROVIDERS } from 'dashboard/helper/inbox';
 import { markCallDismissed, isLocalCall } from 'dashboard/helper/voice';
 import { VOICE_CALL_DIRECTION } from 'dashboard/components-next/message/constants';
 import { FEATURE_FLAGS } from 'dashboard/featureFlags';
+// Shekel fork: for onShekelConversationHidden.
 import types from 'dashboard/store/mutation-types';
 
 const { isImpersonating } = useImpersonation();

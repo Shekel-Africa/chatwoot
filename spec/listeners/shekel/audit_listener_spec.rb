@@ -41,13 +41,13 @@ RSpec.describe Shekel::AuditListener do
 
     it 'metadata_never_contains_message_content' do
       message = create(:message, account: account, inbox: inbox, conversation: conversation, message_type: :outgoing, sender: agent,
-                                 content: 'Your loan is approved, call 08012345678')
+                                 content: 'Your loan is approved, call 000-FAKE-0000')
 
       listener.message_created(event('message.created', message: message))
 
       stored = Shekel::AuditEvent.sole.attributes.values.map(&:to_s).join(' ')
       expect(stored).not_to include('approved')
-      expect(stored).not_to include('08012345678')
+      expect(stored).not_to include('000-FAKE-0000')
     end
 
     it 'bot_replies_are_not_recorded_as_staff_replies' do
