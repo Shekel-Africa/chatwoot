@@ -16,6 +16,7 @@ import { getLoginRedirectURL, getSignupRoute } from 'v3/helpers/AuthHelper';
 import SimpleDivider from '../../components/Divider/SimpleDivider.vue';
 import FormInput from '../../components/Form/Input.vue';
 import GoogleOAuthButton from '../../components/GoogleOauth/Button.vue';
+import ShekelOidcButton from '../../components/ShekelOidc/Button.vue';
 import Spinner from 'shared/components/Spinner.vue';
 import Icon from 'dashboard/components-next/icon/Icon.vue';
 import NextButton from 'dashboard/components-next/button/Button.vue';
@@ -39,6 +40,7 @@ export default {
   components: {
     FormInput,
     GoogleOAuthButton,
+    ShekelOidcButton,
     Spinner,
     NextButton,
     SimpleDivider,
@@ -110,6 +112,9 @@ export default {
         this.allowedLoginMethods.includes('google_oauth') &&
         Boolean(window.chatwootConfig.googleOAuthClientId)
       );
+    },
+    showShekelOidc() {
+      return window.chatwootConfig.shekelOidcEnabled === 'true';
     },
     showSignupLink() {
       return (
@@ -466,6 +471,7 @@ export default {
     >
       <div v-if="!email">
         <div class="flex flex-col gap-4">
+          <ShekelOidcButton v-if="showShekelOidc" />
           <GoogleOAuthButton
             v-if="showGoogleOAuth"
             :redirect-url="redirectUrl"
@@ -486,7 +492,7 @@ export default {
             </router-link>
           </div>
           <SimpleDivider
-            v-if="showGoogleOAuth || showSamlLogin"
+            v-if="showShekelOidc || showGoogleOAuth || showSamlLogin"
             :label="$t('COMMON.OR')"
             class="uppercase"
           />
