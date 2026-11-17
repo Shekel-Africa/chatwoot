@@ -126,8 +126,10 @@ From authentication-api (`IdTokenClaimsBuilder`, `HasOidcSubject::identityClaims
   (always a list; empty when none). Only `id` is used.
 - **Userinfo:** `sub`, plus `email` with the `email` scope, `name` with `profile` and
   `tenants` with `tenants`.
-- **Token response:** `scope`, the granted scopes. Sign-in is refused by the IdP without
-  `customer_comms.access`; `customer_comms.admin` is granted to CRM admins only.
+- **Token response:** `scope`, the granted scopes. The IdP refuses sign-in without
+  `customer_comms.access` only when the client lists it as a required scope, so Chatwoot
+  also refuses (`no-account-found`) unless the granted scope includes it.
+  `customer_comms.admin` is granted only to admins whose role holds it.
 
 ## Register the OAuth client (admin portal)
 
@@ -139,7 +141,9 @@ Ask an authentication-api admin to register, on **staging**:
 | Name | `Chatwoot (local dev)` |
 | Grant types | `authorization_code` only (no refresh token needed; Chatwoot keeps its own session) |
 | Redirect URIs | `http://localhost:3000/omniauth/shekel/callback` (exact match) |
-| Scopes | `openid`, `email`, `profile`, `tenants`, `customer_comms.access`, `customer_comms.admin` |
+| Allowed scopes | `customer_comms.access`, `customer_comms.admin` |
+| Required scopes | `customer_comms.access` |
+| Identity scopes | `openid`, `email`, `profile`, `tenants`: requested by Chatwoot and always granted; not configured as allowed or required |
 | Confidential | yes (has a secret; `client_secret_basic`) |
 | PKCE | S256 (sent by Chatwoot; fine whether or not the client requires it) |
 | first_party | `true`, so staff are not shown a consent screen |
@@ -150,13 +154,34 @@ client can be set or rotated without opening `.env`. Then recreate `rails`:
 `$DC up -d --no-deps --force-recreate rails`.
 
 On staging, register the client in the admin portal (OAuth settings, staging-admin) or with
-`php artisan oauth:register-app --realm=admin ... --scopes= --secret-file=<new path>`
-(authentication-api S20-4821). The portal requires at least one allowed scope; pick
-`consent.read`, which Chatwoot never requests. `openid email profile` are identity scopes,
-always granted: do not add them as allowed or required scopes.
+`php artisan oauth:register-app --realm=admin ...` (authentication-api S20-4821), with
+allowed scopes `customer_comms.access customer_comms.admin` and required scope
+`customer_comms.access`. Identity scopes (`openid email profile tenants`) are always granted:
+do not add them as allowed or required scopes.
 
 Staging client (2026-11-17): `Chatwoot CRM (staging)`, admin realm, first-party,
-`authorization_code` + `refresh_token`, `client_secret_basic`, allowed scopes `consent.read`.
+`authorization_code` + `refresh_token`, `client_secret_basic`. It was registered with allowed
+scopes `consent.read` only, before the `customer_comms.*` scopes existed: update it to the
+allowed and required scopes above, or every sign-in is refused (no `customer_comms.access`
+in the granted scope).
+
+## Operating notes
+
+- **Keep `ENABLE_ACCOUNT_SIGNUP` off.** Staff are provisioned by Shekel sign-in only; public
+  sign-up would let anyone create an account of their own.
+- **Tenant cap.** The tenant ids travel from the first callback hop to the second in the
+  cookie session (about 40 bytes each). An admin holding more than about 60 tenants can hit
+  `ActionDispatch::Cookies::CookieOverflow` at sign-in.
+- **Session lifespan on first deploy.** `SHEKEL_SESSION_LIFESPAN_HOURS` applies to tokens
+  issued after the deploy; existing tokens keep their old (two-month) expiry. If the bound
+  must hold from day one, clear `users.tokens` on the first deploy (everyone signs in again).
+- **Inboxes.** Staff are added to every inbox that exists when they sign in; an inbox created
+  later is joined at their next sign-in.
+- **Misconfiguration.** If `SHEKEL_CHATWOOT_ACCOUNT_ID` is unset or names no account, sign-in
+  redirects to `/app/login?error=shekel-misconfigured` and logs an error.
+- **Password routes.** With Shekel sign-in configured, password sign-in, password reset, the
+  profile password change and devise_token_auth's registrations routes (`POST`, `PUT/PATCH`,
+  `DELETE /auth`) are all refused.
 
 ## Staging discovery returns 403 (nginx)
 
