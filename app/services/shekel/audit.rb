@@ -6,17 +6,21 @@
 # `actor` is a record (User, AgentBot, AutomationRule, ...), an
 # `{ 'type' =>, 'id' => }` reference captured at dispatch (see
 # Shekel::AuditContext), or nil for the system. Metadata keeps only the
-# allow-listed id and status keys below, so message content, emails and phone
-# numbers can never reach the log.
+# allow-listed id, status and filter keys below, so message content, emails and
+# phone numbers can never reach the log.
 #
 # Recording never breaks the caller: a failed write is logged and reported, and
-# nil is returned. An unknown action is a programming error and raises.
+# nil is returned. The insert runs in a savepoint, so a failed write cannot
+# abort a transaction the caller has open. An unknown action is a programming
+# error and raises.
 module Shekel::Audit
   METADATA_KEYS = %w[
     display_id message_id from_assignee_id to_assignee_id from_team_id to_team_id
     from_status to_status data_export_id data_type from to provider
+    since until user_ids inbox_id team_id rating
   ].freeze
   VIEW_THROTTLE = 1.hour
+  REDIS_ERRORS = [Redis::BaseError, ConnectionPool::Error, ConnectionPool::TimeoutError].freeze
 
   module_function
 
@@ -31,16 +35,28 @@ module Shekel::Audit
   end
 
   # conversation.viewed at most once per user per conversation per hour, gated
-  # by a Redis key rather than a database read per request.
+  # by a Redis key rather than a database read per request. The key is released
+  # when the write fails, so the next view is not lost.
   def record_view(user:, conversation:, ip: nil)
     return if user.blank? || conversation.blank?
-    return unless Redis::Alfred.set(view_throttle_key(user: user, conversation: conversation), 1, nx: true, ex: VIEW_THROTTLE.to_i)
 
-    record(action: 'conversation.viewed', actor: user, subject: conversation, account: conversation.account_id,
-           metadata: { display_id: conversation.display_id }, ip: ip)
-  rescue Redis::BaseError => e
-    Rails.logger.error("Shekel audit: view throttle unavailable: #{e.message}")
+    key = view_throttle_key(user: user, conversation: conversation)
+    return unless Redis::Alfred.set(key, 1, nx: true, ex: VIEW_THROTTLE.to_i)
+
+    event = record(action: 'conversation.viewed', actor: user, subject: conversation, account: conversation.account_id,
+                   metadata: { display_id: conversation.display_id }, ip: ip)
+    Redis::Alfred.delete(key) if event.nil?
+    event
+  rescue *REDIS_ERRORS => e
+    Rails.logger.error("Shekel audit: view throttle unavailable: #{e.class}: #{e.message}")
     nil
+  end
+
+  # A sign-out has already succeeded when this runs, so nothing here may raise.
+  def record_sign_out(user:, ip:)
+    record(action: 'staff.signed_out', actor: user, subject: user, account: home_account_id(user), ip: ip)
+  rescue StandardError => e
+    report(e, 'staff.signed_out')
   end
 
   # The account a sign-out is filed under: the Shekel staff account when the
@@ -55,15 +71,20 @@ module Shekel::Audit
     account_ids.include?(staff_account_id) ? staff_account_id : account_ids.first
   end
 
+  # Keyed by actor type too: an AgentBot and a User can share an id.
   def view_throttle_key(user:, conversation:)
-    "SHEKEL::AUDIT::VIEWED::#{user.id}::#{conversation.id}"
+    "SHEKEL::AUDIT::VIEWED::#{user.class.polymorphic_name}::#{user.id}::#{conversation.id}"
   end
 
   def write(attributes)
-    Shekel::AuditEvent.create!(attributes)
+    Shekel::AuditEvent.transaction(requires_new: true) { Shekel::AuditEvent.create!(attributes) }
   rescue StandardError => e
-    Rails.logger.error("Shekel audit: could not record #{attributes[:action]}: #{e.class}: #{e.message}")
-    ChatwootExceptionTracker.new(e).capture_exception
+    report(e, attributes[:action])
+  end
+
+  def report(error, action)
+    Rails.logger.error("Shekel audit: could not record #{action}: #{error.class}: #{error.message}")
+    ChatwootExceptionTracker.new(error).capture_exception
     nil
   end
 

@@ -42,6 +42,7 @@ class Api::V1::Accounts::DataExportsController < Api::V1::Accounts::BaseControll
   def download
     return head :not_found unless @data_export.downloadable?
 
+    shekel_audit_export(@data_export, action: 'data_export.downloaded')
     ActiveStorage::Current.set(url_options: { host: request.base_url }) do
       render json: { download_url: @data_export.export_file.url(disposition: :attachment, expires_in: 5.minutes) }
     end

@@ -1,5 +1,4 @@
-# Shekel fork: the audit-log call site in export pushes the class one line past Metrics/ClassLength.
-class Api::V1::Accounts::ContactsController < Api::V1::Accounts::BaseController # rubocop:disable Metrics/ClassLength
+class Api::V1::Accounts::ContactsController < Api::V1::Accounts::BaseController
   wrap_parameters format: []
 
   include Sift
@@ -47,8 +46,7 @@ class Api::V1::Accounts::ContactsController < Api::V1::Accounts::BaseController 
   end
 
   def export
-    export = DataExports::CreationService.new(account: Current.account, initiated_by: Current.user, options: request.POST.merge(request.GET)).perform
-    shekel_audit_export(export)
+    DataExports::CreationService.new(account: Current.account, initiated_by: Current.user, options: request.POST.merge(request.GET)).perform
     head :ok, message: I18n.t('errors.contacts.export.success')
   rescue ArgumentError => e
     render json: { error: e.message }, status: :unprocessable_entity
@@ -229,3 +227,5 @@ class Api::V1::Accounts::ContactsController < Api::V1::Accounts::BaseController 
 end
 
 Api::V1::Accounts::ContactsController.prepend_mod_with('Api::V1::Accounts::ContactsController')
+# Shekel fork: audit log (contacts.exported).
+Api::V1::Accounts::ContactsController.include(Shekel::ContactAuditHooks)

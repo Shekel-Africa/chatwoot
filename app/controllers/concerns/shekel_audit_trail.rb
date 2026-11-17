@@ -12,8 +12,27 @@ module ShekelAuditTrail
     Shekel::Audit.record_view(user: Current.user, conversation: conversation, ip: request.remote_ip)
   end
 
-  def shekel_audit_export(data_export)
-    shekel_audit('contacts.exported', subject: data_export,
-                                      metadata: { data_export_id: data_export.id, data_type: data_export.data_type })
+  def shekel_audit_export(data_export, action: 'contacts.exported')
+    shekel_audit(action, subject: data_export, metadata: { data_export_id: data_export.id, data_type: data_export.data_type })
+  end
+
+  # csat.exported: the range and filters of the CSV, as ids and epoch seconds only.
+  def shekel_audit_csat_export
+    filters = {
+      since: shekel_integer(params[:since]), until: shekel_integer(params[:until]),
+      user_ids: shekel_integers(params[:user_ids]), inbox_id: shekel_integer(params[:inbox_id]),
+      team_id: shekel_integer(params[:team_id]), rating: shekel_integers(params[:rating])
+    }
+    shekel_audit('csat.exported', subject: nil, metadata: filters.compact)
+  end
+
+  def shekel_integer(value)
+    Integer(value.to_s, 10, exception: false)
+  end
+
+  def shekel_integers(values)
+    return if values.blank?
+
+    Array(values).filter_map { |value| shekel_integer(value) }
   end
 end

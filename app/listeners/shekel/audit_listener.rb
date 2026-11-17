@@ -18,7 +18,11 @@ class Shekel::AuditListener < BaseListener
 
   def assignee_changed(event)
     changed = changes(event)
-    return unless changed.key?('assignee_id') # agent bot and AI assignee changes are not staff assignments
+    # Only assignee_id changes are staff assignments: this drops agent bot and AI
+    # assignee changes, and the second ASSIGNEE_CHANGED that auto-assignment
+    # dispatches itself (AutoAssignment::AssignmentService#dispatch_assignment_event,
+    # payload without changed_attributes) for an assignment already recorded.
+    return unless changed.key?('assignee_id')
 
     from, to = changed['assignee_id']
     record_conversation_event(event, 'conversation.assigned', from_assignee_id: from, to_assignee_id: to)

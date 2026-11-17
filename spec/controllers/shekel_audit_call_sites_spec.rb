@@ -102,6 +102,84 @@ RSpec.describe 'Shekel audit log call sites', type: :request do
     end
   end
 
+  describe 'csat.exported' do
+    let(:csat_url) { "/api/v1/accounts/#{account.id}/csat_survey_responses/download" }
+
+    it 'is recorded with the range and filters only' do
+      get csat_url, params: { since: '1762300800', until: '1763337600', inbox_id: inbox.id, rating: [1, 2] },
+                    headers: admin.create_new_auth_token
+
+      expect(response).to have_http_status(:success)
+      expect(audit_events('csat.exported').sole).to have_attributes(
+        account_id: account.id, actor_type: 'User', actor_id: admin.id, subject_type: nil,
+        metadata: { 'since' => 1_762_300_800, 'until' => 1_763_337_600, 'inbox_id' => inbox.id, 'rating' => [1, 2] }
+      )
+    end
+
+    it 'is not recorded when the download is refused' do
+      get csat_url, headers: agent.create_new_auth_token
+
+      expect(response).to have_http_status(:unauthorized)
+      expect(audit_events('csat.exported')).to be_empty
+    end
+  end
+
+  describe 'data_export.downloaded' do
+    let(:export) do
+      account.data_exports.create!(name: 'Contacts', export_options: { column_names: ['email'] }, initiated_by: admin, status: :completed)
+    end
+
+    it 'is recorded when the file URL is handed out' do
+      export.export_file.attach(io: StringIO.new("email\n"), filename: 'contacts.csv', content_type: 'text/csv')
+
+      get "/api/v1/accounts/#{account.id}/data_exports/#{export.id}/download", headers: admin.create_new_auth_token
+
+      expect(response).to have_http_status(:ok)
+      expect(audit_events('data_export.downloaded').sole).to have_attributes(
+        actor_id: admin.id, subject_type: 'DataExport', subject_id: export.id,
+        metadata: { 'data_export_id' => export.id, 'data_type' => 'contacts' }
+      )
+    end
+
+    it 'is not recorded when there is no file' do
+      get "/api/v1/accounts/#{account.id}/data_exports/#{export.id}/download", headers: admin.create_new_auth_token
+
+      expect(response).to have_http_status(:not_found)
+      expect(audit_events('data_export.downloaded')).to be_empty
+    end
+  end
+
+  describe 'agent bot actions' do
+    let(:agent_bot) { create(:agent_bot, account: account) }
+    let(:bot_headers) { { api_access_token: agent_bot.access_token.token } }
+
+    before { create(:agent_bot_inbox, inbox: inbox, agent_bot: agent_bot) }
+
+    it 'records the AgentBot as the actor of a bot-token toggle_status' do
+      post "#{conversation_url}/toggle_status", headers: bot_headers, params: { status: 'resolved' }, as: :json
+      expect(response).to have_http_status(:success)
+
+      perform_enqueued_jobs(only: EventDispatcherJob)
+
+      expect(audit_events('conversation.resolved').sole).to have_attributes(actor_type: 'AgentBot', actor_id: agent_bot.id)
+    end
+
+    it 'records the AgentBot as the actor of a bot-token assignment' do
+      post "#{conversation_url}/assignments", headers: bot_headers, params: { assignee_id: agent.id }, as: :json
+      expect(response).to have_http_status(:success)
+
+      perform_enqueued_jobs(only: EventDispatcherJob)
+
+      expect(audit_events('conversation.assigned').sole).to have_attributes(actor_type: 'AgentBot', actor_id: agent_bot.id,
+                                                                            metadata: include('to_assignee_id' => agent.id))
+    end
+
+    it 'throttles a bot view separately from a user with the same id' do
+      expect(Shekel::Audit.view_throttle_key(user: agent_bot, conversation: conversation))
+        .not_to eq(Shekel::Audit.view_throttle_key(user: build_stubbed(:user, id: agent_bot.id), conversation: conversation))
+    end
+  end
+
   describe 'staff.signed_out' do
     it 'is recorded when a user signs out' do
       delete '/auth/sign_out', headers: agent.create_new_auth_token

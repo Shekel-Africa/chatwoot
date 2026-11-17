@@ -51,6 +51,35 @@ RSpec.describe Shekel::AuditEvent do
     expect { record_event(action: 'conversation.deleted') }.to raise_error(ArgumentError, /conversation.deleted/)
   end
 
+  it 'a_failed_write_does_not_abort_the_callers_transaction' do
+    allow(described_class).to receive(:create!) { described_class.connection.execute('SELECT 1/0') }
+
+    ActiveRecord::Base.transaction do
+      expect(record_event).to be_nil
+      expect(Account.exists?(account.id)).to be(true) # would raise InFailedSqlTransaction without the savepoint
+    end
+  end
+
+  it 'a_failed_view_write_releases_the_throttle_key' do
+    key = Shekel::Audit.view_throttle_key(user: agent, conversation: conversation)
+    allow(described_class).to receive(:create!).and_raise(ActiveRecord::StatementInvalid, 'boom')
+
+    expect(Shekel::Audit.record_view(user: agent, conversation: conversation)).to be_nil
+    expect(Redis::Alfred.get(key)).to be_nil
+  end
+
+  it 'a_redis_pool_timeout_skips_the_view_without_raising' do
+    allow(Redis::Alfred).to receive(:set).and_raise(ConnectionPool::TimeoutError)
+
+    expect(Shekel::Audit.record_view(user: agent, conversation: conversation)).to be_nil
+  end
+
+  it 'a_sign_out_whose_account_lookup_fails_does_not_raise' do
+    allow(agent).to receive(:account_users).and_raise(ActiveRecord::ConnectionNotEstablished)
+
+    expect(Shekel::Audit.record_sign_out(user: agent, ip: nil)).to be_nil
+  end
+
   it 'never breaks the caller when the write fails' do
     allow(described_class).to receive(:create!).and_raise(ActiveRecord::StatementInvalid, 'boom')
 

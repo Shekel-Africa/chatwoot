@@ -61,6 +61,14 @@ RSpec.describe 'Shekel audit log export', type: :request do
     expect(Shekel::AuditEvent.where(action: 'audit.exported').sole.metadata).to eq('from' => '2026-10-18', 'to' => '2026-11-17')
   end
 
+  it 'allows exactly 366 inclusive days' do
+    get url, params: { from: '2025-11-17', to: '2026-11-17' }, headers: admin.create_new_auth_token
+    expect(response).to have_http_status(:ok)
+
+    get url, params: { from: '2025-11-16', to: '2026-11-17' }, headers: admin.create_new_auth_token
+    expect(response).to have_http_status(:unprocessable_entity)
+  end
+
   it 'rejects an invalid or oversized range' do
     get url, params: { from: 'yesterday' }, headers: admin.create_new_auth_token
     expect(response).to have_http_status(:unprocessable_entity)

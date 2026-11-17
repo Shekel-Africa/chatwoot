@@ -5,7 +5,7 @@ require 'csv'
 #   GET /api/v1/accounts/:account_id/shekel/audit_events?from=2026-11-01&to=2026-11-17
 #
 # `from` and `to` are ISO dates, inclusive; the default is the last 30 days and
-# a range may span at most 366 days. Rows stream oldest first in batches, and
+# a range may span at most 366 days, inclusive. Rows stream oldest first in batches, and
 # the download is itself recorded as `audit.exported`.
 class Api::V1::Accounts::Shekel::AuditEventsController < Api::V1::Accounts::BaseController
   DEFAULT_RANGE = 30.days
@@ -31,7 +31,7 @@ class Api::V1::Accounts::Shekel::AuditEventsController < Api::V1::Accounts::Base
   def set_range
     @to = params[:to].present? ? Date.iso8601(params[:to]) : Time.zone.today
     @from = params[:from].present? ? Date.iso8601(params[:from]) : @to - DEFAULT_RANGE
-    return if @from <= @to && (@to - @from).to_i <= MAX_RANGE_DAYS
+    return if @from <= @to && (@to - @from).to_i + 1 <= MAX_RANGE_DAYS # inclusive days
 
     render json: { error: "from must not be after to, and the range may span at most #{MAX_RANGE_DAYS} days" }, status: :unprocessable_entity
   rescue Date::Error

@@ -16,16 +16,21 @@ of those made the change; empty for the system, e.g. a snooze expiring), `action
 | --- | --- | --- | --- |
 | `staff.signed_in` | staff OIDC sign-in completes | `ShekelOidcSignIn#sign_in_shekel_staff` | `provider` |
 | `staff.signed_out` | a session token is revoked (`DELETE /auth/sign_out`) | `DeviseOverrides::SessionsController#destroy` | — |
-| `conversation.viewed` | conversation opened or its messages loaded; at most once per user per conversation per hour (Redis key) | `ConversationsController#show`, `Conversations::MessagesController#index` | `display_id` |
+| `conversation.viewed` | conversation opened or its messages loaded (by a user or an agent bot token); at most once per actor per conversation per hour (Redis key) | `ConversationsController#show` (via `Shekel::ConversationAuditHooks`), `Conversations::MessagesController#index` | `display_id` |
 | `conversation.replied` | outgoing, non-private message whose sender is a `User` | `Shekel::AuditListener#message_created` | `message_id`, `display_id` |
 | `conversation.note_added` | private note whose sender is a `User` | `Shekel::AuditListener#message_created` | `message_id`, `display_id` |
 | `conversation.assigned` | `assignee_id` changes | `Shekel::AuditListener#assignee_changed` | `from_assignee_id`, `to_assignee_id` |
 | `conversation.team_changed` | `team_id` changes | `Shekel::AuditListener#team_changed` | `from_team_id`, `to_team_id` |
 | `conversation.resolved` | status becomes resolved | `Shekel::AuditListener#conversation_resolved` | `from_status`, `to_status` |
 | `conversation.reopened` | status becomes open (from resolved, pending or snoozed) | `Shekel::AuditListener#conversation_opened` | `from_status`, `to_status` |
-| `conversation.transcript_sent` | transcript emailed | `ConversationsController#transcript` | `display_id` (never the address) |
-| `contacts.exported` | contacts export queued | `ContactsController#export`, `DataExportsController#create` / `#rerun` | `data_export_id`, `data_type` |
+| `conversation.transcript_sent` | transcript emailed | `ConversationsController#transcript` (via `Shekel::ConversationAuditHooks`) | `display_id` (never the address) |
+| `contacts.exported` | contacts export queued | `ContactsController#export` (via `Shekel::ContactAuditHooks`), `DataExportsController#create` / `#rerun` | `data_export_id`, `data_type` |
+| `data_export.downloaded` | the export file's download URL is handed out (the actual retrieval) | `DataExportsController#download` | `data_export_id`, `data_type` |
+| `csat.exported` | CSAT responses downloaded as CSV | `CsatSurveyResponsesController#download` | `since`, `until` (epoch seconds), `user_ids`, `inbox_id`, `team_id`, `rating` (filters as sent) |
 | `audit.exported` | this log downloaded as CSV | `Shekel::AuditEventsController#index` | `from`, `to` |
+
+Controller-recorded actions only happen when the action succeeded; a refused request records
+nothing.
 
 Bot and system replies are not staff replies and are not recorded. Agent-bot and AI
 assignee changes are not recorded as `conversation.assigned`.
@@ -43,10 +48,24 @@ names cannot reach the log.
   `performed_by` (`Current.executed_by`, which upstream sets for automations, auto-assignment
   and contact reopens, not for a signed-in user), so `Shekel::AuditContext`, prepended to
   `Dispatcher`, adds `shekel_audit: { actor_type, actor_id, from_status }` to the payload
-  inside the request: `Current.executed_by` when set, otherwise `Current.user`.
+  inside the request: `Current.executed_by` when set, otherwise `Current.user`. For an API
+  access token, `AccessTokenAuthHelper#authenticate_access_token!` sets `Current.user` to the
+  token's owner, a `User` or an `AgentBot`, so a bot that resolves, reopens, assigns or moves
+  a conversation through the API is recorded as that `AgentBot`.
 
 Recording never fails the user's action: a failed write is logged and sent to the exception
-tracker.
+tracker, the insert runs in a savepoint (so it cannot abort a transaction the caller has
+open), and a failed view write releases its throttle key. If Redis is unavailable,
+`conversation.viewed` is skipped.
+
+### Not audited
+
+- `GET /api/v2/accounts/:id/reports/{agents,inboxes,labels,teams,conversations_summary,conversation_traffic}`
+  CSVs: aggregate counts and timings per agent, inbox, label, team or hour, with no message
+  content and no contact or per-conversation rows.
+- `GET /api/v1/accounts/:id/data_imports/:id/{error_logs,skip_logs,rejected_rows}`: diagnostics
+  of an import, over data the administrator uploaded themselves.
+- Password sign-ins (super admins); staff sign in through OIDC (`staff.signed_in`).
 
 ## Exporting
 
@@ -60,7 +79,7 @@ curl -H "api_access_token: $TOKEN" \
 
 `from` and `to` are ISO 8601 dates, inclusive (whole days in the account's app time zone,
 `created_at` in the CSV is UTC). The default is the last 30 days; a range may span at most
-366 days. Rows stream oldest first in batches. Columns: `id, created_at, account_id,
+366 days, counted inclusively. Rows stream oldest first in batches. Columns: `id, created_at, account_id,
 actor_type, actor_id, action, subject_type, subject_id, ip_address, metadata` (metadata as
 JSON). Each download is itself recorded as `audit.exported` with its range.
 

@@ -30,10 +30,7 @@ class DeviseOverrides::SessionsController < DeviseTokenAuth::SessionsController
 
   # Shekel fork: audit log. DTA yields the user only once the token is revoked.
   def destroy
-    super do |user|
-      Shekel::Audit.record(action: 'staff.signed_out', actor: user, subject: user, account: Shekel::Audit.home_account_id(user),
-                           ip: request.remote_ip)
-    end
+    super { |user| Shekel::Audit.record_sign_out(user: user, ip: request.remote_ip) }
   end
 
   def render_create_success
