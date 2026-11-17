@@ -24,7 +24,7 @@ Values live in the deployment's secret store, never in git.
 | `SHEKEL_OIDC_CLIENT_ID`, `SHEKEL_OIDC_CLIENT_SECRET`, `SHEKEL_OIDC_ISSUER`, `SHEKEL_OIDC_REDIRECT_URI`, `SHEKEL_OIDC_AUTHORIZE_URL`, `SHEKEL_OIDC_TOKEN_URL`, `SHEKEL_OIDC_USERINFO_URL`, `SHEKEL_OIDC_JWKS_URL`, `SHEKEL_OIDC_DISCOVERY` | — | Staff sign-in through authentication-api's admin realm. Setting the client id turns password sign-in off. Meanings in [LOCAL_OIDC_LOGIN.md](LOCAL_OIDC_LOGIN.md#environment-variables). |
 | `SHEKEL_CHATWOOT_ACCOUNT_ID` | — | The account staff are provisioned into. Required for sign-in, `shekel:*` tasks and the retention audit row. |
 | `SHEKEL_SESSION_LIFESPAN_HOURS` | `12` | Staff session length. Read at boot. |
-| `SHEKEL_PUBLIC_HOST` | — | Public host of this Chatwoot (Task 10, upcoming). |
+| `SHEKEL_PUBLIC_HOST` | — | Public hostname Meta delivers webhooks to. On that `Host` only `GET`/`POST /webhooks/whatsapp/<number>` pass and everything else is a bare 404. The proxy must set `Host`; `X-Forwarded-Host` is ignored. Unset, the guard is off (local dev). |
 | `SHEKEL_RETENTION_BOT_ONLY_DAYS` | `30` | Days of inactivity before a bot-only conversation is deleted. |
 | `SHEKEL_RETENTION_WITH_PERSON_MONTHS` | `12` | Months of inactivity before a conversation a person took part in is deleted. |
 | `SHEKEL_RETENTION_DRY_RUN` | `true` | While true (or unset), the retention job only counts, logs and audits. Set `false` to delete. |

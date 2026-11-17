@@ -24,6 +24,14 @@ class Shekel::OidcSettings
     enabled?
   end
 
+  # Hostname Meta delivers webhooks to. Requests on it may reach only the channel
+  # webhook paths (Shekel::PublicHostGuard). Nil leaves the guard off, for local
+  # development.
+  def self.public_host
+    host = ENV.fetch('SHEKEL_PUBLIC_HOST', '').strip
+    host.empty? ? nil : Shekel::PublicHostGuard.normalize_host(host)
+  end
+
   # The one Chatwoot account that Shekel staff are provisioned into.
   def self.account_id
     Integer(ENV.fetch('SHEKEL_CHATWOOT_ACCOUNT_ID'))
