@@ -17,6 +17,11 @@ class Conversations::PermissionFilterService
   private
 
   def accessible_conversations
+    # Shekel fork: an agent sees only their teams' conversations (also reached by enterprise custom roles).
+    Shekel::ConversationVisibility.scope(user: user, account: account, relation: inbox_accessible_conversations)
+  end
+
+  def inbox_accessible_conversations
     return hinted_accessible_conversations if @plan_hint_selective_filter
 
     conversations.where(inbox: user.inboxes.where(account_id: account.id))

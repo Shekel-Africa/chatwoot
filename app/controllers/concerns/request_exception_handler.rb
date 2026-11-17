@@ -23,6 +23,9 @@ module RequestExceptionHandler
     render_not_found_error('Resource could not be found')
   rescue Pundit::NotAuthorizedError => e
     log_handled_error(e)
+    # Shekel fork: another team's conversation reads as not found.
+    return render_not_found_error('Resource could not be found') if Shekel::ConversationVisibility.hidden?(record: e.record, user: Current.user)
+
     render_unauthorized('You are not authorized to do this action')
   rescue ActionController::ParameterMissing => e
     log_handled_error(e)

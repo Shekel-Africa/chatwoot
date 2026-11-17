@@ -40,7 +40,9 @@ class Messages::MentionService
   def valid_mentionable_user_ids
     @valid_mentionable_user_ids ||= begin
       inbox = message.inbox
-      inbox.account.administrators.pluck(:id) + inbox.members.pluck(:id)
+      # Shekel fork: only members who can see the conversation can be mentioned in it.
+      members = Shekel::ConversationVisibility.recipients(conversation: message.conversation, users: inbox.members)
+      inbox.account.administrators.pluck(:id) + members.pluck(:id)
     end
   end
 

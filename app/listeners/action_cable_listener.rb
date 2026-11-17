@@ -49,7 +49,7 @@ class ActionCableListener < BaseListener
   def first_reply_created(event)
     message, account = extract_message_and_account(event)
     conversation = message.conversation
-    tokens = user_tokens(account, conversation.inbox.members)
+    tokens = user_tokens(account, conversation_members(conversation))
 
     broadcast(account, tokens, FIRST_REPLY_CREATED, message.push_event_data)
   end
@@ -143,7 +143,7 @@ class ActionCableListener < BaseListener
   def broadcast_to_inbox_members(event, event_name, **metadata)
     conversation, account = extract_conversation_and_account(event)
 
-    broadcast(account, user_tokens(account, conversation.inbox.members), event_name, conversation.push_event_data.merge(metadata))
+    broadcast(account, user_tokens(account, conversation_members(conversation)), event_name, conversation.push_event_data.merge(metadata))
   end
 
   def account_token(account)
@@ -186,7 +186,7 @@ class ActionCableListener < BaseListener
   end
 
   def inbox_user_tokens(conversation)
-    user_tokens(conversation.account, conversation.inbox.members)
+    user_tokens(conversation.account, conversation_members(conversation))
   end
 
   # Whoever is typing does not get their own typing event
@@ -197,6 +197,11 @@ class ActionCableListener < BaseListener
 
   def typing_contact_inboxes(conversation, user)
     user.is_a?(Contact) ? [] : [conversation.contact_inbox]
+  end
+
+  # Shekel fork: only inbox members who can see the conversation get its events.
+  def conversation_members(conversation)
+    Shekel::ConversationVisibility.recipients(conversation: conversation, users: conversation.inbox.members)
   end
 
   def user_tokens(account, agents)

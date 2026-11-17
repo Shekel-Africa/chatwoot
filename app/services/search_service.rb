@@ -36,6 +36,8 @@ class SearchService
                                          .where("cast(conversations.display_id as text) ILIKE :search OR contacts.name ILIKE :search OR contacts.email
                             ILIKE :search OR contacts.phone_number ILIKE :search OR contacts.identifier ILIKE :search
                             OR conversations.additional_attributes->>'mail_subject' ILIKE :search", search: "%#{search_query}%")
+    # Shekel fork: an agent sees only their teams' conversations.
+    conversations_query = Shekel::ConversationVisibility.scope(user: current_user, account: current_account, relation: conversations_query)
 
     if current_account.feature_enabled?('advanced_search')
       conversations_query = apply_time_filter(conversations_query,
@@ -109,7 +111,8 @@ class SearchService
   def message_base_query
     query = current_account.messages.where('created_at >= ?', search_window_start)
     query = query.where(inbox_id: accessable_inbox_ids) unless should_skip_inbox_filtering?
-    query
+    # Shekel fork: an agent sees only messages of their teams' conversations.
+    Shekel::ConversationVisibility.scope_messages(user: current_user, account: current_account, relation: query)
   end
 
   def apply_message_filters(query)
