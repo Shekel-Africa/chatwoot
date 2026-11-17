@@ -1,0 +1,28 @@
+# Shekel local dev overlay for docker-compose.yaml.
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.shekel.yaml up
+#
+# - Unique project name, so it never collides with another Chatwoot checkout.
+# - Postgres, Redis and Mailhog are bound to loopback on non-default ports:
+#   the shared dev host already runs Redis on 6379 and Mailpit on 1025/8025.
+# - Postgres gets a password (the upstream file leaves it empty, which the
+#   pgvector image refuses). Compose reads POSTGRES_PASSWORD from .env.
+# See docs/shekel/LOCAL_OIDC_LOGIN.md.
+name: cw-shekel-dev
+
+services:
+  postgres:
+    ports: !override
+      - '127.0.0.1:55432:5432'
+    environment: !override
+      - POSTGRES_DB=chatwoot
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+
+  redis:
+    ports: !override
+      - '127.0.0.1:56379:6379'
+
+  mailhog:
+    ports: !override
+      - '127.0.0.1:58025:8025'
