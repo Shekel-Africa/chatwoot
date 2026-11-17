@@ -1,0 +1,192 @@
+# Local dev: staff sign-in through authentication-api (OIDC, admin realm)
+
+This is the Shekel fork of Chatwoot (`Shekel-Africa/chatwoot`, branch `shekel/main`).
+Staff sign in with their authentication-api **admin** account. The design is in
+`docs/superpowers/specs/2026-11-17-shailoq-agent-gateway-design.md` (sections 4.2 and 6.2)
+in the Shekel docs repo.
+
+## Community build only
+
+We use the MIT core only. Never enable anything under `enterprise/` (proprietary, paid per
+seat; it includes SAML/SSO, custom roles, audit logs, SLA, Captain).
+
+- Upstream's switch is the `DISABLE_ENTERPRISE` environment variable
+  (`ChatwootApp.enterprise?` in `lib/chatwoot_app.rb`). When it is set, the `enterprise/`
+  overlays (`prepend_mod_with`, `enterprise/app/**` behaviour) are not loaded.
+- `ENV.fetch('DISABLE_ENTERPRISE', false)` treats **any** value as "disabled", including
+  the string `false`. Set it to `true` and never to anything else.
+- The `enterprise/` files are still in the tree (eager-load paths), only inert. A
+  production image must also delete the directory (`rm -rf enterprise spec/enterprise`)
+  before build; that is for the production build work, not this local setup.
+
+## Run it
+
+Prerequisites: Docker. Everything runs in containers; no host Ruby or Node is needed.
+
+```sh
+W=/mnt/nas/code/shekel/chatwoot/shekel-main
+DC="docker compose --project-directory $W -f $W/docker-compose.yaml -f $W/docker-compose.shekel.yaml"
+
+$DC build                                   # first time only, slow
+$DC run --rm rails bundle exec rails db:chatwoot_prepare
+$DC up -d rails                             # also starts postgres, redis, vite, sidekiq, mailhog
+```
+
+Open http://localhost:3000. If the browser is not on the NAS, forward port 3000 (and 3036
+for Vite) so the URL is still `localhost:3000`: the redirect URI is exact-match.
+
+`docker-compose.shekel.yaml` gives the stack its own project name (`cw-shekel-dev`) and
+moves Postgres, Redis and Mailhog to loopback ports 55432, 56379 and 58025, because the
+shared dev host already uses 6379, 1025 and 8025.
+
+### Create an agent to sign in as
+
+Sign-in only matches **existing** agents by email; nothing is auto-provisioned. Create the
+installation's first account through the onboarding screen, or from a console:
+
+```sh
+$DC run --rm rails bundle exec rails runner '
+  account = Account.create!(name: "Shekel Local")
+  user = User.create!(name: "Local Admin", email: "<your admin email>", password: "<a strong password>", confirmed_at: Time.current)
+  AccountUser.create!(account: account, user: user, role: :administrator)
+'
+```
+
+Use the same email as your authentication-api admin account.
+
+## Environment variables
+
+All go in the worktree's `.env` (gitignored; on the NAS it is a hardlink to
+`/mnt/nas/code/shekel/chatwoot/.wt-shared/.env`). Never commit values.
+
+| Variable | Meaning |
+|---|---|
+| `DISABLE_ENTERPRISE` | `true`. Community build only. |
+| `FRONTEND_URL` | `http://localhost:3000` locally. |
+| `SHEKEL_OIDC_CLIENT_ID` | Admin-realm OAuth client id. Setting it shows the "Sign in with Shekel" button. |
+| `SHEKEL_OIDC_CLIENT_SECRET` | That client's secret. |
+| `SHEKEL_OIDC_ISSUER` | Admin-realm issuer: `https://auth.shekel.africa/oauth/admin` on staging. Checked against the ID token's `iss`. |
+| `SHEKEL_OIDC_REDIRECT_URI` | `http://localhost:3000/omniauth/shekel/callback` locally. Must equal the registered redirect URI. |
+| `SHEKEL_OIDC_AUTHORIZE_URL` | `<host>/oauth/admin/authorize` |
+| `SHEKEL_OIDC_TOKEN_URL` | `<host>/oauth/admin/token` |
+| `SHEKEL_OIDC_USERINFO_URL` | `<host>/oauth/admin/userinfo` |
+| `SHEKEL_OIDC_JWKS_URL` | `<host>/oauth/jwks` (shared by both realms) |
+| `SHEKEL_OIDC_DISCOVERY` | Optional. `true` reads the four URLs from `<issuer>/.well-known/openid-configuration` instead. Leave it off on staging until the nginx fix below is in. |
+
+`<host>` is `https://auth.shekel.africa` on staging. The endpoint paths come from
+authentication-api (`routes/oauth.php`, `routes/oauth-protocol.php`,
+`OAuthRealmRoutes::issuer()`, `OIDCController::discovery()`).
+
+## How it works
+
+- `config/initializers/omniauth.rb` mounts an `omniauth_openid_connect` strategy named
+  `shekel`. Its settings are read from `SHEKEL_OIDC_*` per request by
+  `Shekel::OidcSettings` (`app/services/shekel/oidc_settings.rb`): authorization code flow,
+  PKCE (S256), state, nonce, `client_secret_basic`, scopes `openid email profile`. The ID
+  token is verified against the JWKS for signature (RS256 only, pinned with
+  `client_signing_alg`), issuer, audience and nonce. `realm` is read from the merged
+  ID-token + userinfo claims (`extra.raw_info`); the ID-token value wins.
+- The button (`app/javascript/v3/components/ShekelOidc/Button.vue`) POSTs to
+  `/omniauth/shekel` with the Rails CSRF token (OmniAuth refuses a GET request phase).
+- The callback goes through upstream's `DeviseOverrides::OmniauthCallbacksController`, which
+  hands off to `ShekelOidcSignIn` (`app/controllers/concerns/shekel_oidc_sign_in.rb`):
+  - the `realm` claim must be `admin` (a customer-realm token, or one with no `realm`, is
+    refused even if the email matches an agent). This is checked on the first callback hop
+    (`redirect_callbacks`), because devise_token_auth drops `extra` (the ID-token claims)
+    from the auth hash it carries to the second hop; a one-shot session flag passes the
+    result on;
+  - the email is matched case-insensitively to an existing `User`; no match means
+    `/app/login?error=no-account-found`, and nothing is created;
+  - a match signs in through upstream's SSO-token path (the same as Google sign-in).
+- Local email/password login still works. It is for local testing only; the spec requires
+  it to be disabled for staff before any real deployment.
+
+### What the admin realm gives us
+
+From authentication-api (`IdTokenClaimsBuilder`, `HasOidcSubject::identityClaims`,
+`OIDCController::userinfo`):
+
+- **ID token:** `iss` (`.../oauth/admin`), `aud` (client id), `sub` (admin id), `email`,
+  `name`, `realm` = `admin`, `nonce`. No `tenant_id` (admins sign in to no tenant) and no
+  `company_id`.
+- **Userinfo:** `sub`, plus `email` with the `email` scope and `name` with `profile`.
+- Neither carries the admin's tenants (`admin_client`, `all_tenants`). The team/inbox sync
+  in spec section 6.2 will need another source, e.g. an admin API call with the access
+  token or a new claim in authentication-api.
+
+## Register the OAuth client (admin portal)
+
+Ask an authentication-api admin to register, on **staging**:
+
+| Field | Value |
+|---|---|
+| Realm | `admin` |
+| Name | `Chatwoot (local dev)` |
+| Grant types | `authorization_code` only (no refresh token needed; Chatwoot keeps its own session) |
+| Redirect URIs | `http://localhost:3000/omniauth/shekel/callback` (exact match) |
+| Scopes | `openid`, `email`, `profile` |
+| Confidential | yes (has a secret; `client_secret_basic`) |
+| PKCE | S256 (sent by Chatwoot; fine whether or not the client requires it) |
+| first_party | `true`, so staff are not shown a consent screen |
+
+Put the client id and secret into `.env` as `SHEKEL_OIDC_CLIENT_ID` and
+`SHEKEL_OIDC_CLIENT_SECRET`, then restart `rails`.
+
+## Staging discovery returns 403 (nginx)
+
+`GET https://auth.shekel.africa/oauth/admin/.well-known/openid-configuration` returns an
+nginx 403, while the user-realm document at `/.well-known/openid-configuration` returns 200.
+Laravel never sees the request.
+
+Cause (checked read-only on the staging host on 2026-11-17): the vhost includes
+`/etc/nginx/snippets/shekel-svc-authentication-api-php.conf`, which has
+
+```nginx
+location ^~ /.well-known/ {
+    try_files $uri $uri/ /index.php?$query_string;
+}
+
+# Deny access to sensitive files
+location ~ /\. {
+    deny all;
+    ...
+}
+```
+
+The `^~ /.well-known/` exemption only matches the well-known directory at the root. The
+admin document is at `/oauth/admin/.well-known/...`, so it falls through to the regex
+`location ~ /\.` and is denied. A request to `127.0.0.1` with `Host: auth.shekel.africa` on
+the host gives the same 403, so Cloudflare is not involved.
+
+Proposed fix, in the same snippet next to the existing block:
+
+```nginx
+# The admin realm is its own issuer (authentication-api OAuthRealmRoutes::issuer),
+# so its discovery document sits under /oauth/admin/.well-known/.
+location ^~ /oauth/admin/.well-known/ {
+    try_files $uri $uri/ /index.php?$query_string;
+}
+```
+
+then `sudo nginx -t && sudo systemctl reload nginx`. Check whether the production host
+uses the same snippet; it would have the same problem. Until then, keep
+`SHEKEL_OIDC_DISCOVERY` off and set the endpoints explicitly.
+
+## Tests
+
+```sh
+$DC run --rm --no-deps -e RAILS_ENV=test rails bundle exec rails db:schema:load
+$DC run --rm --no-deps -e RAILS_ENV=test rails bundle exec rspec \
+  spec/controllers/devise/shekel_oidc_callbacks_spec.rb spec/services/shekel \
+  spec/controllers/devise/omniauth_callbacks_controller_spec.rb
+```
+
+The specs set every `SHEKEL_OIDC_*` variable they depend on, so the real values that
+compose loads from `.env` do not leak into them.
+
+## Building the images from a worktree
+
+In a git worktree `.git` is a pointer file to a repo outside the Docker build context, so
+upstream's `RUN git rev-parse HEAD` failed. The fork's `docker/Dockerfile` falls back to
+the `GIT_SHA` build arg (or `unknown`). Pass `--build-arg GIT_SHA=$(git rev-parse HEAD)`
+when the image's reported version matters.
