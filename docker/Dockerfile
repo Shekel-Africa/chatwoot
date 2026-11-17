@@ -87,7 +87,11 @@ RUN if [ "$RAILS_ENV" = "production" ]; then \
   fi
 
 # Generate .git_sha file with current commit hash
-RUN git rev-parse HEAD > /app/.git_sha
+# Shekel fork: in a git worktree checkout `.git` is a pointer file to a repo
+# outside the build context, so rev-parse fails. Fall back to the GIT_SHA build
+# arg (or "unknown") instead of failing the build.
+ARG GIT_SHA
+RUN (git rev-parse HEAD 2>/dev/null || echo "${GIT_SHA:-unknown}") > /app/.git_sha
 
 # Remove unnecessary files
 RUN rm -rf /gems/ruby/3.4.0/cache/*.gem \
