@@ -1,9 +1,12 @@
 class DeviseOverrides::OmniauthCallbacksController < DeviseTokenAuth::OmniauthCallbacksController
   include EmailHelper
+  include ShekelOidcSignIn
 
   SHOPIFY_INSTALL_REDIRECT_PATTERN = %r{\Asettings/integrations/shopify\?shopify_pending_install=([0-9a-f]{32})\z}
 
   def omniauth_success
+    return sign_in_shekel_staff if shekel_oidc_callback?
+
     get_resource_from_auth_hash
 
     @resource.present? ? sign_in_user(redirect_url: oauth_redirect_url, sso_account_id: oauth_context['sso_account_id']) : sign_up_user
