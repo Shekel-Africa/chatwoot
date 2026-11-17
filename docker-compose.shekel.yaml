@@ -26,3 +26,12 @@ services:
   mailhog:
     ports: !override
       - '127.0.0.1:58025:8025'
+
+  # OIDC settings from a second, optional, gitignored file that wins over .env,
+  # so the client id and secret can be set or rotated without touching .env.
+  # See docs/shekel/LOCAL_OIDC_LOGIN.md.
+  rails:
+    env_file: !override
+      - path: .env
+      - path: .env.shekel-oidc
+        required: false

@@ -129,8 +129,19 @@ Ask an authentication-api admin to register, on **staging**:
 | PKCE | S256 (sent by Chatwoot; fine whether or not the client requires it) |
 | first_party | `true`, so staff are not shown a consent screen |
 
-Put the client id and secret into `.env` as `SHEKEL_OIDC_CLIENT_ID` and
-`SHEKEL_OIDC_CLIENT_SECRET`, then restart `rails`.
+Put the `SHEKEL_OIDC_*` values in `.env.shekel-oidc` (gitignored, mode 0600) rather than
+`.env`. `docker-compose.shekel.yaml` loads it into `rails` after `.env`, so it wins, and the
+client can be set or rotated without opening `.env`. Then recreate `rails`:
+`$DC up -d --no-deps --force-recreate rails`.
+
+On staging, register the client in the admin portal (OAuth settings, staging-admin) or with
+`php artisan oauth:register-app --realm=admin ... --scopes= --secret-file=<new path>`
+(authentication-api S20-4821). The portal requires at least one allowed scope; pick
+`consent.read`, which Chatwoot never requests. `openid email profile` are identity scopes,
+always granted: do not add them as allowed or required scopes.
+
+Staging client (2026-11-17): `Chatwoot CRM (staging)`, admin realm, first-party,
+`authorization_code` + `refresh_token`, `client_secret_basic`, allowed scopes `consent.read`.
 
 ## Staging discovery returns 403 (nginx)
 
