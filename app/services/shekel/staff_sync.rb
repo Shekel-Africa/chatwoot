@@ -50,7 +50,19 @@ class Shekel::StaffSync
   end
 
   def find_or_create_user
-    User.from_email(@email) || create_user
+    user = User.from_email(@email)
+    return create_user if user.nil?
+
+    confirm(user)
+    user
+  end
+
+  # The IdP verified the email; upstream's OAuth sign-in confirms the same way.
+  def confirm(user)
+    return if user.confirmed?
+
+    user.skip_confirmation!
+    user.save!
   end
 
   def create_user

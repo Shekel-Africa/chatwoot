@@ -259,6 +259,44 @@ RSpec.describe 'Shekel OIDC staff sign-in', type: :request do
       end
     end
 
+    it 'issues an SSO token marked as Shekel, which the password guard accepts' do
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'agent@shekel.test')
+        complete_callback
+
+        expect(Shekel::SsoTokens.shekel?(agent, redirect_query['sso_auth_token'])).to be(true)
+      end
+    end
+
+    it 'refuses every other provider in staff mode, at both hops' do
+      OmniAuth.config.mock_auth[:google_oauth2] = OmniAuth::AuthHash.new(
+        provider: 'google_oauth2', uid: '123', info: { name: 'Agent', email: 'agent@shekel.test' }
+      )
+
+      with_modified_env(**shekel_env) do
+        get '/omniauth/google_oauth2/callback'
+        expect(response).to redirect_to("#{frontend_url}/app/login?error=no-account-found")
+
+        get '/auth/google_oauth2/callback'
+        expect(response).to redirect_to("#{frontend_url}/app/login?error=no-account-found")
+      end
+    ensure
+      OmniAuth.config.mock_auth.delete(:google_oauth2)
+    end
+
+    it 'leaves other providers as upstream when staff mode is off' do
+      OmniAuth.config.mock_auth[:google_oauth2] = OmniAuth::AuthHash.new(
+        provider: 'google_oauth2', uid: '123', info: { name: 'Agent', email: 'agent@shekel.test' }
+      )
+
+      with_modified_env(**shekel_env, SHEKEL_CHATWOOT_ACCOUNT_ID: nil) do
+        get '/omniauth/google_oauth2/callback'
+        expect(response).to redirect_to("#{frontend_url}/auth/google_oauth2/callback")
+      end
+    ensure
+      OmniAuth.config.mock_auth.delete(:google_oauth2)
+    end
+
     it 'refuses the second hop when the realm check was not passed in this session' do
       with_modified_env(**shekel_env) do
         mock_shekel_auth(email: 'agent@shekel.test')

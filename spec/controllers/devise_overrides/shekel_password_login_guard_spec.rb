@@ -49,12 +49,30 @@ RSpec.describe 'Shekel password login guard', type: :request do
     end
   end
 
-  it 'sso_auth_token_sign_in_still_works' do
+  it 'sso_auth_token_sign_in_from_shekel_still_works' do
     with_modified_env(**staff_mode) do
-      post new_user_session_url, params: { email: user.email, sso_auth_token: user.generate_sso_auth_token }, as: :json
+      post new_user_session_url, params: { email: user.email, sso_auth_token: Shekel::SsoTokens.issue(user) }, as: :json
 
       expect(response).to have_http_status(:success)
       expect(response.parsed_body.dig('data', 'email')).to eq(user.email)
+    end
+  end
+
+  it 'refuses an sso_auth_token not issued by Shekel sign-in (Google, platform SSO link, impersonation)' do
+    with_modified_env(**staff_mode) do
+      [user.generate_sso_auth_token, user.generate_sso_auth_token(impersonated_by: create(:super_admin))].each do |token|
+        post new_user_session_url, params: { email: user.email, sso_auth_token: token }, as: :json
+
+        expect_refused(:unauthorized)
+      end
+    end
+  end
+
+  it 'accepts any valid sso_auth_token when staff mode is off' do
+    with_modified_env(SHEKEL_CHATWOOT_ACCOUNT_ID: nil) do
+      post new_user_session_url, params: { email: user.email, sso_auth_token: user.generate_sso_auth_token }, as: :json
+
+      expect(response).to have_http_status(:success)
     end
   end
 

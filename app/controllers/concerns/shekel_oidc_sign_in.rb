@@ -22,8 +22,10 @@ module ShekelOidcSignIn
   REALM_VERIFIED_KEY = 'shekel.oidc.admin_realm_verified'.freeze
 
   # First callback hop (/omniauth/shekel/callback), where the full auth hash is
-  # still available.
+  # still available. In staff mode every other provider is refused here and in
+  # omniauth_success.
   def redirect_callbacks
+    return redirect_to login_page_url(error: 'no-account-found') if shekel_other_provider_refused?
     return super unless shekel_oidc_callback?
 
     session.delete(REALM_VERIFIED_KEY)
@@ -44,6 +46,12 @@ module ShekelOidcSignIn
     params[:provider] == Shekel::OidcSettings::PROVIDER
   end
 
+  # Staff sign in through Shekel only: Google (and any other provider) would
+  # skip the realm, scope and team checks.
+  def shekel_other_provider_refused?
+    Shekel::OidcSettings.staff_mode? && !shekel_oidc_callback?
+  end
+
   # Second hop (/auth/shekel/callback), called from omniauth_success.
   def sign_in_shekel_staff
     verified = session.delete(REALM_VERIFIED_KEY)
@@ -60,7 +68,8 @@ module ShekelOidcSignIn
       admin: verified['admin'] == true
     ).call
 
-    sign_in_user
+    # A marked token: in staff mode the password guard accepts no other SSO token.
+    redirect_to login_page_url(email: ERB::Util.url_encode(@resource.email), sso_auth_token: Shekel::SsoTokens.issue(@resource))
     Shekel::Audit.record(action: 'staff.signed_in', actor: @resource, subject: @resource, account: account,
                          metadata: { provider: Shekel::OidcSettings::PROVIDER }, ip: request.remote_ip)
   end

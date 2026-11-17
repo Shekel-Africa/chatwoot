@@ -1,7 +1,8 @@
 # Shekel fork: in staff mode (Shekel::OidcSettings.staff_mode?), staff sign in
 # through Shekel only. Password sign-in, password reset and the profile password
-# change are refused; the SSO-token sign-in that finishes a Shekel sign-in is
-# unaffected. Staff mode keys on SHEKEL_CHATWOOT_ACCOUNT_ID, not on the OIDC
+# change are refused, and so is an SSO token from any other provider (Google,
+# platform SSO links, impersonation): only the SSO token that finishes a Shekel
+# sign-in (Shekel::SsoTokens) is accepted. Staff mode keys on SHEKEL_CHATWOOT_ACCOUNT_ID, not on the OIDC
 # client id, so losing the OIDC settings does not bring passwords back.
 #
 # Same shape as enterprise's SamlAuthenticationHelper#saml_user_attempting_password_auth?.
@@ -12,7 +13,7 @@ module ShekelPasswordLoginGuard
 
   def shekel_password_auth_attempt?(email, sso_auth_token: nil)
     return false unless Shekel::OidcSettings.password_login_disabled?
-    return false if sso_auth_token.present? && email.present? && User.from_email(email)&.valid_sso_auth_token?(sso_auth_token)
+    return false if email.present? && Shekel::SsoTokens.shekel?(User.from_email(email), sso_auth_token)
 
     true
   end
