@@ -122,8 +122,9 @@ it to `false` and restart Sidekiq. Deletion is irreversible.
 
 ## Audit export
 
-Administrators of the account export the log as CSV, with the token of a user in
-`SHEKEL_API_USER_IDS` (personal tokens are refused otherwise in staff mode):
+Administrators of the account export the log as CSV with their normal signed-in session
+(`devise_token_auth` headers `access-token`, `client`, `uid`). An `api_access_token` works only
+for a user in `SHEKEL_API_USER_IDS` (personal tokens are refused otherwise in staff mode):
 
 ```sh
 curl -H "api_access_token: $TOKEN" \
@@ -132,3 +133,5 @@ curl -H "api_access_token: $TOKEN" \
 ```
 
 Ranges, columns and the append-only guarantee are in [AUDIT_LOG.md](AUDIT_LOG.md).
+
+Do not issue Platform API apps while staff mode is on: they can write users' `custom_attributes`.

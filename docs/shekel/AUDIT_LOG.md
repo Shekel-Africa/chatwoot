@@ -69,8 +69,10 @@ open), and a failed view write releases its throttle key. If Redis is unavailabl
 
 ## Exporting
 
-Administrators of the account only, with the token of a user listed in
-`SHEKEL_API_USER_IDS` (other personal tokens are refused in staff mode; see
+Administrators of the account only. An administrator can export with their normal
+signed-in session (the `devise_token_auth` headers `access-token`, `client` and `uid`). An
+`api_access_token` works only for a user listed in `SHEKEL_API_USER_IDS` (other personal
+tokens are refused in staff mode; see
 [OPERATIONS.md](OPERATIONS.md#environment-variables)):
 
 ```sh
