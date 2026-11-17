@@ -125,15 +125,6 @@ RSpec.describe 'Shekel password login guard', type: :request do
     end
   end
 
-  it 'api_access_token_requests_are_unaffected' do
-    with_modified_env(**staff_mode) do
-      get '/api/v1/profile', headers: { api_access_token: user.access_token.token }, as: :json
-
-      expect(response).to have_http_status(:success)
-      expect(response.parsed_body['email']).to eq(user.email)
-    end
-  end
-
   it 'password_sign_in_still_works_when_staff_mode_is_off' do
     with_modified_env(SHEKEL_CHATWOOT_ACCOUNT_ID: nil) do
       post new_user_session_url, params: { email: user.email, password: 'Password1!' }, as: :json

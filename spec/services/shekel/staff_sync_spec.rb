@@ -28,6 +28,22 @@ RSpec.describe Shekel::StaffSync do
     expect(role_of(user)).to eq('agent')
   end
 
+  it 'rotates_the_personal_api_token_on_every_sign_in' do
+    user = sync
+    token = user.access_token.reload.token
+
+    sync
+    expect(user.access_token.reload.token).not_to eq(token)
+  end
+
+  it 'keeps_the_api_token_of_an_allow_listed_service_user' do
+    user = sync
+    token = user.access_token.reload.token
+
+    with_modified_env(SHEKEL_API_USER_IDS: user.id.to_s) { sync }
+    expect(user.access_token.reload.token).to eq(token)
+  end
+
   it 'promotes_to_administrator_when_crm_admin_is_granted_and_demotes_when_it_is_not' do
     user = sync(admin: true)
     expect(role_of(user)).to eq('administrator')

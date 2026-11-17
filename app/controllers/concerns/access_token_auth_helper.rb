@@ -39,6 +39,8 @@ module AccessTokenAuthHelper
     ensure_access_token
 
     render_unauthorized('Invalid Access Token') && return if @access_token.blank?
+    # Shekel fork: in staff mode a personal (User) token works only for SHEKEL_API_USER_IDS (Shekel::ApiTokens).
+    render_unauthorized('Invalid Access Token') && return if Shekel::ApiTokens.refused?(@access_token)
 
     # NOTE: This ensures that current_user is set and available for the rest of the controller actions
     @resource = @access_token.owner
