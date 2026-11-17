@@ -76,10 +76,15 @@ secret store. The audit log is not touched.
 `Shekel::RetentionJob` runs daily at 02:30 UTC (`config/schedule.yml`, queue `low`) and calls
 `Shekel::Retention` for every account. Age is measured from `conversations.last_activity_at`.
 
-- **With a person**: any message from a staff `User` that is outgoing, or any private note.
-  Deleted after `SHEKEL_RETENTION_WITH_PERSON_MONTHS` (12) months.
-- **Bot-only**: everything else (contact, Shailoq and activity messages only). Deleted after
+- **With a person**: an outgoing `User` message, a `User`-authored private note, or a
+  WhatsApp-app echo (a staff reply sent from the WhatsApp Business app). Deleted after
+  `SHEKEL_RETENTION_WITH_PERSON_MONTHS` (12) months. Website campaign conversations count
+  as with a person when the campaign has a `User` sender (its first message is an outgoing
+  `User` message), so they are kept 12 months.
+- **Bot-only**: everything else (contact, Shailoq, activity messages, and private notes from
+  Shailoq, automations, macros or the system). Deleted after
   `SHEKEL_RETENTION_BOT_ONLY_DAYS` (30) days.
+- Conversations snoozed until a future time are skipped.
 
 Each conversation is deleted by its own upstream `DeleteObjectJob` (queue `low`), enqueued
 in batches of 500. Only conversations (and their messages, attachments and so on) are
@@ -88,8 +93,9 @@ a conversation still queued from the day before is enqueued again and the extra 
 discarded once the first has deleted it.
 
 Each run writes one `retention.purged` audit row (actor empty, filed under
-`SHEKEL_CHATWOOT_ACCOUNT_ID`) with the counts for all accounts, both cutoffs and `dry_run`,
-and logs the same line (`Shekel retention ...`).
+`SHEKEL_CHATWOOT_ACCOUNT_ID`, or no account with a logged warning if it is unset) with
+`bot_only_enqueued` and `with_person_enqueued` for all accounts, both cutoffs and
+`dry_run`, and logs the same line (`Shekel retention ...`).
 
 **Dry run.** `SHEKEL_RETENTION_DRY_RUN` defaults to `true`: the job counts what it would
 delete, logs and audits it, and enqueues nothing. Check the counts for a few days, then set

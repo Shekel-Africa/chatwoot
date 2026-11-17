@@ -2,8 +2,10 @@
 #
 # - A conversation only Shailoq (the agent bot) and the contact took part in is
 #   deleted BOT_ONLY_DAYS after its last activity.
-# - A conversation a person took part in (a staff reply, or any private note) is
-#   deleted WITH_PERSON_MONTHS after its last activity.
+# - A conversation a person took part in (a staff reply or private note, or a
+#   reply from the WhatsApp Business app) is deleted WITH_PERSON_MONTHS after
+#   its last activity.
+# - A conversation snoozed into the future is skipped.
 #
 # Only conversations are selected. Contacts stay, and the audit log
 # (shekel_audit_events) is never touched. Each conversation is deleted by its
@@ -17,13 +19,22 @@ class Shekel::Retention
   WITH_PERSON_MONTHS = 12
   BATCH_SIZE = 500
 
-  # A staff member's outgoing reply, or a private note by anyone.
+  OUTGOING = Message.message_types[:outgoing]
+
+  # A person took part: an outgoing message or a private note from a staff
+  # User, or a reply sent from the WhatsApp Business app (stored as an outgoing
+  # echo with no sender). Notes from Shailoq, automations, macros or the system
+  # do not count. content_attributes is a json column holding a JSON-encoded
+  # string (ActiveRecord::Store), hence the #>> '{}' unwrap, as in
+  # Message.not_forwarded.
   PERSON_MESSAGE_SQL = <<~SQL.squish.freeze
     EXISTS (
       SELECT 1 FROM messages
       WHERE messages.conversation_id = conversations.id
-        AND ((messages.sender_type = 'User' AND messages.message_type = #{Message.message_types[:outgoing]})
-             OR messages.private = TRUE)
+        AND ((messages.sender_type = 'User' AND messages.message_type = #{OUTGOING})
+             OR (messages.sender_type = 'User' AND messages.private = TRUE)
+             OR (messages.message_type = #{OUTGOING}
+                 AND (messages.content_attributes #>> '{}')::jsonb ->> 'external_echo' = 'true'))
     )
   SQL
 
@@ -40,6 +51,7 @@ class Shekel::Retention
   end
 
   def initialize(now: Time.current)
+    @now = now
     @bot_only_cutoff = now - self.class.bot_only_days.days
     @with_person_cutoff = now - self.class.with_person_months.months
     @dry_run = self.class.dry_run?
@@ -56,11 +68,16 @@ class Shekel::Retention
   end
 
   def bot_only_scope(account)
-    account.conversations.where(last_activity_at: ...@bot_only_cutoff).where.not(PERSON_MESSAGE_SQL)
+    candidates(account).where(last_activity_at: ...@bot_only_cutoff).where.not(PERSON_MESSAGE_SQL)
   end
 
   def with_person_scope(account)
-    account.conversations.where(last_activity_at: ...@with_person_cutoff).where(PERSON_MESSAGE_SQL)
+    candidates(account).where(last_activity_at: ...@with_person_cutoff).where(PERSON_MESSAGE_SQL)
+  end
+
+  # A conversation snoozed into the future is still in use.
+  def candidates(account)
+    account.conversations.where('conversations.snoozed_until IS NULL OR conversations.snoozed_until <= ?', @now)
   end
 
   private
@@ -89,7 +106,7 @@ class Shekel::Retention
     Shekel::Audit.record(
       action: 'retention.purged', actor: nil, subject: nil, account: audit_account_id,
       metadata: {
-        bot_only_deleted: counts[:bot_only], with_person_deleted: counts[:with_person],
+        bot_only_enqueued: counts[:bot_only], with_person_enqueued: counts[:with_person],
         bot_only_cutoff: @bot_only_cutoff.iso8601, with_person_cutoff: @with_person_cutoff.iso8601,
         dry_run: @dry_run
       }
@@ -101,6 +118,7 @@ class Shekel::Retention
   def audit_account_id
     Shekel::OidcSettings.account_id
   rescue KeyError, ArgumentError
+    Rails.logger.warn('Shekel retention: SHEKEL_CHATWOOT_ACCOUNT_ID is not set; the retention.purged audit row has no account')
     nil
   end
 end

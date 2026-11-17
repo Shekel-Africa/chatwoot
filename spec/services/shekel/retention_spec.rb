@@ -19,6 +19,12 @@ RSpec.describe Shekel::Retention do
     create(:message, account: account, inbox: inbox, conversation: conversation, **attributes)
   end
 
+  # The message factory gives every sender-less message a sender; system
+  # messages and WhatsApp-app echoes have none.
+  def add_senderless_message(conversation, **attributes)
+    add_message(conversation, **attributes).tap { |m| m.update_columns(sender_type: nil, sender_id: nil) } # rubocop:disable Rails/SkipsModelValidations
+  end
+
   def bot_only(conversation)
     add_message(conversation, message_type: :incoming, sender: conversation.contact)
     add_message(conversation, message_type: :outgoing, sender: bot)
@@ -54,14 +60,59 @@ RSpec.describe Shekel::Retention do
     expect { run_retention }.not_to have_enqueued_job(DeleteObjectJob)
   end
 
-  it 'keeps_a_conversation_with_a_private_note_inactive_for_31_days' do
+  it 'keeps_a_conversation_with_a_staff_private_note_inactive_for_31_days' do
     conversation_inactive_for(31.days) do |c|
       bot_only(c)
-      # Any private note counts, whoever wrote it.
-      add_message(c, message_type: :outgoing, private: true, sender: bot)
+      add_message(c, message_type: :outgoing, private: true, sender: agent)
     end
 
     expect { run_retention }.not_to have_enqueued_job(DeleteObjectJob)
+  end
+
+  it 'deletes_a_conversation_with_only_bot_or_system_private_notes_inactive_for_31_days' do
+    conversation = conversation_inactive_for(31.days) do |c|
+      bot_only(c)
+      add_message(c, message_type: :outgoing, private: true, sender: bot)
+      add_senderless_message(c, message_type: :outgoing, private: true, content: 'Unverified contact')
+    end
+
+    expect { run_retention }.to have_enqueued_job(DeleteObjectJob).with(conversation)
+  end
+
+  it 'keeps_a_conversation_with_a_whatsapp_app_echo_inactive_for_31_days' do
+    conversation_inactive_for(31.days) do |c|
+      bot_only(c)
+      add_senderless_message(c, message_type: :outgoing, content_attributes: { external_echo: true })
+    end
+
+    expect { run_retention }.not_to have_enqueued_job(DeleteObjectJob)
+  end
+
+  it 'keeps_a_conversation_snoozed_into_the_future' do
+    conversation_inactive_for(31.days) do |c|
+      bot_only(c)
+      c.update_columns(status: Conversation.statuses[:snoozed], snoozed_until: 2.days.from_now) # rubocop:disable Rails/SkipsModelValidations
+    end
+
+    expect { run_retention }.not_to have_enqueued_job(DeleteObjectJob)
+  end
+
+  it 'deletes_a_conversation_whose_snooze_has_passed' do
+    conversation = conversation_inactive_for(31.days) do |c|
+      bot_only(c)
+      c.update_columns(status: Conversation.statuses[:snoozed], snoozed_until: 1.day.ago) # rubocop:disable Rails/SkipsModelValidations
+    end
+
+    expect { run_retention }.to have_enqueued_job(DeleteObjectJob).with(conversation)
+  end
+
+  it 'warns_when_the_audit_row_has_no_account' do
+    allow(Rails.logger).to receive(:warn)
+
+    run_retention(SHEKEL_CHATWOOT_ACCOUNT_ID: nil)
+
+    expect(Rails.logger).to have_received(:warn).with(/SHEKEL_CHATWOOT_ACCOUNT_ID/)
+    expect(Shekel::AuditEvent.last.account_id).to be_nil
   end
 
   it 'deletes_a_with_person_conversation_inactive_for_13_months' do
@@ -95,7 +146,7 @@ RSpec.describe Shekel::Retention do
 
     event = Shekel::AuditEvent.last
     expect(event).to have_attributes(action: 'retention.purged', actor_type: nil, actor_id: nil, subject_type: nil)
-    expect(event.metadata).to include('bot_only_deleted' => 2, 'with_person_deleted' => 1, 'dry_run' => false)
+    expect(event.metadata).to include('bot_only_enqueued' => 2, 'with_person_enqueued' => 1, 'dry_run' => false)
     expect(Time.zone.parse(event.metadata['bot_only_cutoff'])).to be_within(1.minute).of(30.days.ago)
     expect(Time.zone.parse(event.metadata['with_person_cutoff'])).to be_within(1.minute).of(12.months.ago)
   end
@@ -117,7 +168,7 @@ RSpec.describe Shekel::Retention do
     conversation_inactive_for(31.days) { |c| bot_only(c) }
 
     expect { run_retention(dry_run: 'true') }.not_to have_enqueued_job(DeleteObjectJob)
-    expect(Shekel::AuditEvent.last.metadata).to include('bot_only_deleted' => 1, 'with_person_deleted' => 0, 'dry_run' => true)
+    expect(Shekel::AuditEvent.last.metadata).to include('bot_only_enqueued' => 1, 'with_person_enqueued' => 0, 'dry_run' => true)
   end
 
   it 'is_a_dry_run_unless_turned_off' do

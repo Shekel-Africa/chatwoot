@@ -29,7 +29,7 @@ of those made the change; empty for the system, e.g. a snooze expiring), `action
 | `data_import.downloaded` | an import's error log, skip log or rejected-rows file downloaded (they can hold contact details) | `DataImportsController#error_logs` / `#skip_logs` / `#rejected_rows` (via `Shekel::DataImportAuditHooks`) | `data_import_id`, `kind` (`error_logs`, `skip_logs`, `rejected_rows`) |
 | `csat.exported` | CSAT responses downloaded as CSV | `CsatSurveyResponsesController#download` | `since`, `until` (epoch seconds), `user_ids`, `inbox_id`, `team_id`, `rating` (filters as sent) |
 | `audit.exported` | this log downloaded as CSV | `Shekel::AuditEventsController#index` | `from`, `to` |
-| `retention.purged` | once per daily retention run (actor empty: the system), filed under the `SHEKEL_CHATWOOT_ACCOUNT_ID` account; counts cover every account; see OPERATIONS.md | `Shekel::Retention#perform` | `bot_only_deleted`, `with_person_deleted` (conversations enqueued for deletion, or that would be in a dry run), `bot_only_cutoff`, `with_person_cutoff` (ISO 8601), `dry_run` |
+| `retention.purged` | once per daily retention run (actor empty: the system), filed under the `SHEKEL_CHATWOOT_ACCOUNT_ID` account; counts cover every account; see OPERATIONS.md | `Shekel::Retention#perform` | `bot_only_enqueued`, `with_person_enqueued` (conversations enqueued for deletion, or that would be in a dry run), `bot_only_cutoff`, `with_person_cutoff` (ISO 8601), `dry_run` |
 
 Controller-recorded actions only happen when the action succeeded; a refused request records
 nothing.
