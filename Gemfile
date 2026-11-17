@@ -192,6 +192,8 @@ gem 'omniauth', '>= 2.1.2'
 gem 'omniauth-saml'
 gem 'omniauth-google-oauth2', '>= 1.1.3'
 gem 'omniauth-rails_csrf_protection', '~> 1.0', '>= 1.0.2'
+# Shekel: staff sign-in through authentication-api (OIDC, admin realm)
+gem 'omniauth_openid_connect', '~> 0.8.0'
 
 ## Gems for reponse bot
 # adds cosine similarity to postgres using vector extension
