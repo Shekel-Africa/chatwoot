@@ -33,7 +33,7 @@ module ShekelOidcSignIn
     return redirect_to login_page_url(error: 'no-account-found') unless shekel_staff_sign_in_allowed?(auth)
     return redirect_to login_page_url(error: 'shekel-misconfigured') if shekel_staff_account.blank?
 
-    session[REALM_VERIFIED_KEY] = { 'tenants' => shekel_tenant_ids(auth), 'admin' => shekel_comms_admin?(auth) }
+    session[REALM_VERIFIED_KEY] = shekel_verified_claims(auth)
     super
     # The second hop needs only `info`; dropping the tokens keeps the cookie
     # session small now that the ID token carries the tenants claim.
@@ -60,18 +60,21 @@ module ShekelOidcSignIn
     account = shekel_staff_account
     return redirect_to login_page_url(error: 'shekel-misconfigured') if account.blank?
 
-    @resource = Shekel::StaffSync.new(
-      account: account,
-      email: auth_hash.dig('info', 'email'),
-      name: auth_hash.dig('info', 'name'),
-      tenant_ids: verified['tenants'],
-      admin: verified['admin'] == true
-    ).call
+    @resource = shekel_staff_sync(account, verified)
 
     # A marked token: in staff mode the password guard accepts no other SSO token.
     redirect_to login_page_url(email: ERB::Util.url_encode(@resource.email), sso_auth_token: Shekel::SsoTokens.issue(@resource))
     Shekel::Audit.record(action: 'staff.signed_in', actor: @resource, subject: @resource, account: account,
                          metadata: { provider: Shekel::OidcSettings::PROVIDER }, ip: request.remote_ip)
+  end
+
+  def shekel_staff_sync(account, verified)
+    Shekel::StaffSync.new(
+      account: account,
+      identity: { sub: verified['sub'], email: auth_hash.dig('info', 'email'), name: auth_hash.dig('info', 'name') },
+      tenant_ids: verified['tenants_claim'] ? verified['tenants'] : nil,
+      admin: verified['admin'] == true
+    ).call
   end
 
   def shekel_staff_sign_in_allowed?(omniauth_auth)
@@ -93,6 +96,22 @@ module ShekelOidcSignIn
   rescue KeyError, ArgumentError
     Rails.logger.error('Shekel OIDC: SHEKEL_CHATWOOT_ACCOUNT_ID is not set or not an integer')
     nil
+  end
+
+  # What the second hop needs, carried in the cookie session. Only the tenant
+  # ids mapped to a team of the staff account are kept (an `all_tenants`
+  # administrator's claim lists every tenant and would overflow the 4 KB
+  # cookie); `tenants_claim` records whether the claim was there at all.
+  def shekel_verified_claims(omniauth_auth)
+    tenant_ids = shekel_tenant_ids(omniauth_auth)
+    mapped = tenant_ids && Shekel::TenantTeam.where(account: shekel_staff_account, tenant_id: tenant_ids).distinct.pluck(:tenant_id)
+
+    {
+      'sub' => (omniauth_auth.dig('extra', 'raw_info', 'sub').presence || omniauth_auth['uid']).to_s.presence,
+      'tenants_claim' => !tenant_ids.nil?,
+      'tenants' => mapped || [],
+      'admin' => shekel_comms_admin?(omniauth_auth)
+    }
   end
 
   # Tenant ids from the `tenants` claim, or nil when the claim is absent (an

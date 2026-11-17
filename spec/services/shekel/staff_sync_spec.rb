@@ -6,8 +6,8 @@ RSpec.describe Shekel::StaffSync do
   let(:tenant_a) { '0b4f3c1e-8a1d-4d5c-9a51-0d1c5a3b7e01' }
   let(:tenant_b) { '0b4f3c1e-8a1d-4d5c-9a51-0d1c5a3b7e02' }
 
-  def sync(tenant_ids: [], admin: false)
-    described_class.new(account: account, email: email, name: 'Ada Admin', tenant_ids: tenant_ids, admin: admin).call
+  def sync(tenant_ids: [], admin: false, sub: nil, email: self.email)
+    described_class.new(account: account, identity: { sub: sub, email: email, name: 'Ada Admin' }, tenant_ids: tenant_ids, admin: admin).call
   end
 
   def map_tenant(tenant_id, team)
@@ -26,6 +26,36 @@ RSpec.describe Shekel::StaffSync do
     expect(user.name).to eq('Ada Admin')
     expect(user).to be_confirmed
     expect(role_of(user)).to eq('agent')
+  end
+
+  describe 'identity' do
+    it 'stores_the_idp_subject_on_a_new_user' do
+      expect(sync(sub: 'staff-7').custom_attributes['shekel_sub']).to eq('staff-7')
+    end
+
+    it 'adopts_an_existing_user_with_the_same_email_and_links_the_subject' do
+      existing = create(:user, email: email, skip_confirmation: false)
+
+      expect(sync(sub: 'staff-7')).to eq(existing)
+      expect(existing.reload.custom_attributes['shekel_sub']).to eq('staff-7')
+      expect(existing).to be_confirmed
+    end
+
+    it 'keeps_the_same_user_when_the_email_changes_at_the_idp' do
+      user = sync(sub: 'staff-7')
+
+      expect { expect(sync(sub: 'staff-7', email: 'ada.renamed@shekel.test')).to eq(user) }.not_to change(User, :count)
+      expect(user.reload.email).to eq('ada.renamed@shekel.test')
+      expect(user.unconfirmed_email).to be_nil
+    end
+
+    it 'prefers_the_subject_over_the_email' do
+      user = sync(sub: 'staff-7')
+      other = create(:user, email: 'someone@shekel.test')
+
+      expect(sync(sub: 'staff-7', email: other.email)).to eq(user)
+      expect(user.reload.email).to eq(email) # another user holds the new email
+    end
   end
 
   it 'rotates_the_personal_api_token_on_every_sign_in' do
@@ -145,7 +175,7 @@ RSpec.describe Shekel::StaffSync do
     existing = create(:user, email: email)
     encrypted_password = existing.encrypted_password
 
-    user = described_class.new(account: account, email: 'Ada@Shekel.TEST', name: 'Ada Admin', tenant_ids: [], admin: false).call
+    user = described_class.new(account: account, identity: { email: 'Ada@Shekel.TEST', name: 'Ada Admin' }, tenant_ids: [], admin: false).call
 
     expect(user).to eq(existing)
     expect(user.reload.encrypted_password).to eq(encrypted_password)

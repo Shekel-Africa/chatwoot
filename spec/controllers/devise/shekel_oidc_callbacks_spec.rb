@@ -27,12 +27,12 @@ RSpec.describe 'Shekel OIDC staff sign-in', type: :request do
     { id: id, slug: 'acme-motors', country: 'ng' }
   end
 
-  def mock_shekel_auth(email:, realm: 'admin', tenants: [], scope: nil)
-    raw_info = { sub: '42', email: email, name: 'Ada Admin', realm: realm, tenants: tenants }.compact
+  def mock_shekel_auth(email:, realm: 'admin', tenants: [], scope: nil, sub: '42')
+    raw_info = { sub: sub, email: email, name: 'Ada Admin', realm: realm, tenants: tenants }.compact
     OmniAuth.config.test_mode = true
     OmniAuth.config.mock_auth[:shekel] = OmniAuth::AuthHash.new(
       provider: 'shekel',
-      uid: '42',
+      uid: sub,
       info: { name: 'Ada Admin', email: email },
       credentials: { token: 'access-token', scope: scope || access_scope },
       extra: { raw_info: raw_info }
@@ -188,6 +188,36 @@ RSpec.describe 'Shekel OIDC staff sign-in', type: :request do
         complete_callback
 
         expect(team.reload.members).not_to include(agent)
+      end
+    end
+
+    it 'keeps the same Chatwoot user when the email changes at the IdP' do
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'agent@shekel.test', sub: 'staff-7')
+        complete_callback # adopts the existing agent and links the IdP subject
+        expect(agent.reload.custom_attributes['shekel_sub']).to eq('staff-7')
+
+        mock_shekel_auth(email: 'agent.renamed@shekel.test', sub: 'staff-7')
+        expect { complete_callback }.not_to change(User, :count)
+
+        expect(agent.reload.email).to eq('agent.renamed@shekel.test')
+        expect(CGI.unescape(redirect_query['email'])).to eq('agent.renamed@shekel.test')
+      end
+    end
+
+    it 'keeps only the mapped tenants in the cookie session, so an all-tenants admin fits' do
+      team = create(:team, account: account)
+      Shekel::TenantTeam.create!(account: account, tenant_id: tenant_id, team: team)
+      every_tenant = Array.new(400) { tenant_claim(SecureRandom.uuid) } << tenant_claim(tenant_id)
+
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'agent@shekel.test', tenants: every_tenant, scope: admin_scope)
+        get '/omniauth/shekel/callback'
+
+        expect(session[ShekelOidcSignIn::REALM_VERIFIED_KEY]).to include('tenants_claim' => true, 'tenants' => [tenant_id])
+        follow_redirect!
+        expect(redirect_query['sso_auth_token']).to be_present
+        expect(team.members).to include(agent)
       end
     end
 

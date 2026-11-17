@@ -1,5 +1,10 @@
 # Shekel fork: provisions and syncs a staff member on each Shekel sign-in.
 #
+# - Finds the user by the IdP subject (`sub`, kept in custom_attributes as
+#   `shekel_sub`), then by email, so an email change at the IdP keeps the same
+#   Chatwoot user and the Chatwoot email follows it. A user who already exists
+#   with the same email (created by hand, or before Shekel sign-in) is adopted
+#   on their first Shekel sign-in.
 # - Creates the user (random password, confirmed) the first time.
 # - Sets their role in the account: administrator with the CRM admin grant,
 #   agent without it.
@@ -14,10 +19,14 @@
 # Safe to run on every sign-in. Two concurrent first sign-ins for the same
 # person race on the inserts; the loser retries once and finds the winner's rows.
 class Shekel::StaffSync
-  def initialize(account:, email:, name:, tenant_ids:, admin:)
+  SUB_ATTRIBUTE = 'shekel_sub'.freeze
+
+  # `identity` is the IdP's `{ sub:, email:, name: }`.
+  def initialize(account:, identity:, tenant_ids:, admin:)
     @account = account
-    @email = email.to_s.strip.downcase
-    @name = name.presence || @email.split('@').first
+    @sub = identity[:sub].to_s.presence
+    @email = identity[:email].to_s.strip.downcase
+    @name = identity[:name].presence || @email.split('@').first
     @tenant_ids = tenant_ids&.map { |id| id.to_s.downcase }
     @admin = admin
   end
@@ -50,24 +59,53 @@ class Shekel::StaffSync
   end
 
   def find_or_create_user
-    user = User.from_email(@email)
+    user = user_by_sub || User.from_email(@email)
     return create_user if user.nil?
 
-    confirm(user)
+    adopt(user)
     user
   end
 
-  # The IdP verified the email; upstream's OAuth sign-in confirms the same way.
-  def confirm(user)
-    return if user.confirmed?
+  def user_by_sub
+    return if @sub.nil?
 
-    user.skip_confirmation!
-    user.save!
+    User.where("custom_attributes ->> '#{SUB_ATTRIBUTE}' = ?", @sub).order(:id).first
+  end
+
+  # Links the user to the IdP subject, follows an email change at the IdP and
+  # confirms them (the IdP verified the email; upstream's OAuth sign-in confirms
+  # the same way).
+  def adopt(user)
+    user.skip_confirmation! unless user.confirmed?
+    link_sub(user)
+    follow_email(user)
+    user.save! if user.changed?
+  end
+
+  def link_sub(user)
+    return if @sub.nil? || user.custom_attributes[SUB_ATTRIBUTE] == @sub
+
+    previous = user.custom_attributes[SUB_ATTRIBUTE]
+    Rails.logger.warn("Shekel staff sync: user #{user.id} was linked to another IdP subject; relinking") if previous.present?
+    user.custom_attributes = user.custom_attributes.merge(SUB_ATTRIBUTE => @sub)
+  end
+
+  def follow_email(user)
+    return if user.email.casecmp?(@email)
+
+    if User.from_email(@email)
+      Rails.logger.warn("Shekel staff sync: user #{user.id} changed email at the IdP to one another user holds; email not updated")
+      return
+    end
+
+    user.skip_reconfirmation!
+    user.email = @email
   end
 
   def create_user
     password = "1!aA#{SecureRandom.alphanumeric(16)}"
-    User.new(email: @email, name: @name, password: password, password_confirmation: password).tap do |user|
+    custom_attributes = @sub ? { SUB_ATTRIBUTE => @sub } : {}
+    User.new(email: @email, name: @name, password: password, password_confirmation: password, custom_attributes: custom_attributes).tap do |user|
       user.skip_confirmation!
       user.save!
     end
