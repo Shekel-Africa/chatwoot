@@ -14,7 +14,7 @@ RSpec.describe 'Shekel conversation visibility', type: :request do
   let!(:unteamed_conversation) { create(:conversation, account: account, inbox: inbox, team: nil) }
 
   before do
-    allow(Shekel::OidcSettings).to receive(:enabled?).and_return(true)
+    allow(Shekel::OidcSettings).to receive(:staff_mode?).and_return(true)
     [ng_agent, ke_agent].each { |agent| create(:inbox_member, user: agent, inbox: inbox) }
     create(:team_member, team: ng_team, user: ng_agent)
     create(:team_member, team: ke_team, user: ke_agent)
@@ -124,8 +124,17 @@ RSpec.describe 'Shekel conversation visibility', type: :request do
     expect(visible_by_id?(ng_agent, unteamed_conversation)).to be(false)
   end
 
-  it 'leaves upstream inbox access alone when Shekel sign-in is disabled' do
+  # Fails closed: staff mode keys on SHEKEL_CHATWOOT_ACCOUNT_ID, so losing the
+  # OIDC settings does not open every conversation to every agent.
+  it 'still restricts agents when staff mode is on and Shekel sign-in is not configured' do
     allow(Shekel::OidcSettings).to receive(:enabled?).and_return(false)
+
+    expect(listed_ids(ng_agent)).to contain_exactly(ng_conversation.display_id)
+    expect(visible_by_id?(ng_agent, ke_conversation)).to be(false)
+  end
+
+  it 'leaves upstream inbox access alone when staff mode is off' do
+    allow(Shekel::OidcSettings).to receive(:staff_mode?).and_return(false)
 
     expect(listed_ids(ng_agent)).to contain_exactly(ng_conversation.display_id, ke_conversation.display_id, unteamed_conversation.display_id)
     expect(visible_by_id?(ng_agent, ke_conversation)).to be(true)

@@ -13,7 +13,7 @@ RSpec.describe 'Shekel contact visibility', type: :request do
   let!(:lonely_contact) { create(:contact, account: account, name: 'Lonely Dealer', email: 'lonely-dealer@example.com') }
 
   before do
-    allow(Shekel::OidcSettings).to receive(:enabled?).and_return(true)
+    allow(Shekel::OidcSettings).to receive(:staff_mode?).and_return(true)
     create(:inbox_member, user: ng_agent, inbox: inbox)
     create(:team_member, team: ng_team, user: ng_agent)
     create(:conversation, account: account, inbox: inbox, team: ng_team, contact: ng_contact)

@@ -14,7 +14,7 @@ RSpec.describe Shekel::ConversationVisibility do
   let(:enabled) { true }
 
   before do
-    allow(Shekel::OidcSettings).to receive(:enabled?).and_return(enabled)
+    allow(Shekel::OidcSettings).to receive(:staff_mode?).and_return(enabled)
     [ng_agent, ke_agent].each { |agent| create(:inbox_member, user: agent, inbox: inbox) }
     create(:team_member, team: ng_team, user: ng_agent)
     create(:team_member, team: ke_team, user: ke_agent)
@@ -59,12 +59,20 @@ RSpec.describe Shekel::ConversationVisibility do
       Current.reset
     end
 
-    context 'when Shekel sign-in is disabled' do
+    context 'when staff mode is off' do
       let(:enabled) { false }
 
       it 'returns the relation unchanged' do
         relation = account.conversations
         expect(described_class.scope(user: ng_agent, account: account, relation: relation)).to equal(relation)
+      end
+    end
+
+    context 'when staff mode is on but Shekel sign-in is not configured' do
+      before { allow(Shekel::OidcSettings).to receive(:enabled?).and_return(false) }
+
+      it 'still keeps an agent to their teams' do
+        expect(scoped(ng_agent)).to contain_exactly(ng_conversation)
       end
     end
   end
@@ -91,6 +99,20 @@ RSpec.describe Shekel::ConversationVisibility do
     it 'lets administrators and agent bots see everything' do
       expect(described_class.visible?(user: admin, conversation: unteamed_conversation)).to be(true)
       expect(described_class.visible?(user: create(:agent_bot), conversation: ke_conversation)).to be(true)
+    end
+  end
+
+  describe '.creation_defaults' do
+    it 'uses the loaded Current.account instead of looking the account up again' do
+      Current.account = account
+      allow(Account).to receive(:find).and_call_original
+
+      defaults = described_class.creation_defaults(user: ng_agent, attributes: { account_id: account.id, team_id: nil, assignee_id: nil })
+
+      expect(defaults).to eq(team_id: ng_team.id)
+      expect(Account).not_to have_received(:find)
+    ensure
+      Current.reset
     end
   end
 

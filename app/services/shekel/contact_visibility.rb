@@ -1,8 +1,8 @@
 # Shekel fork: an agent sees only the contacts of conversations they can see.
 #
-# Contacts (dealers) follow Shekel::ConversationVisibility: with Shekel sign-in
-# enabled, an agent sees a contact only when at least one of the contact's
-# conversations is visible to them. A contact with no conversation is visible
+# Contacts (dealers) follow Shekel::ConversationVisibility: in staff mode, an
+# agent sees a contact only when at least one of the contact's conversations is
+# visible to them. A contact with no conversation is visible
 # to administrators only. Administrators and non-staff actors are unaffected.
 #
 # Called from `# Shekel fork:` hooks in the contacts controllers, contact
@@ -32,7 +32,7 @@ module Shekel::ContactVisibility
   # Pubsub tokens for a contact event, or nil to keep upstream's account-wide
   # stream: administrators plus the agents who can see one of its conversations.
   def event_tokens(account:, contact_id:)
-    return unless Shekel::OidcSettings.enabled?
+    return unless Shekel::OidcSettings.staff_mode?
 
     conversations = account.conversations.where(contact_id: contact_id)
     user_ids = AccountUser.where(account_id: account.id, role: :administrator).pluck(:user_id)

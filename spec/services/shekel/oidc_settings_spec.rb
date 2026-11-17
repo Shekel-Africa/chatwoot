@@ -30,10 +30,52 @@ RSpec.describe Shekel::OidcSettings do
     end
   end
 
+  describe '.staff_mode?' do
+    it 'follows SHEKEL_CHATWOOT_ACCOUNT_ID, not the OIDC client id' do
+      with_modified_env(SHEKEL_CHATWOOT_ACCOUNT_ID: nil, SHEKEL_OIDC_CLIENT_ID: 'chatwoot-test-client') do
+        expect(described_class.staff_mode?).to be(false)
+      end
+      with_modified_env(SHEKEL_CHATWOOT_ACCOUNT_ID: '  ') { expect(described_class.staff_mode?).to be(false) }
+      with_modified_env(SHEKEL_CHATWOOT_ACCOUNT_ID: '7', SHEKEL_OIDC_CLIENT_ID: nil) { expect(described_class.staff_mode?).to be(true) }
+    end
+  end
+
   describe '.password_login_disabled?' do
-    it 'follows enabled?' do
-      with_modified_env(SHEKEL_OIDC_CLIENT_ID: nil) { expect(described_class.password_login_disabled?).to be(false) }
-      with_modified_env(SHEKEL_OIDC_CLIENT_ID: 'chatwoot-test-client') { expect(described_class.password_login_disabled?).to be(true) }
+    it 'follows staff_mode?' do
+      with_modified_env(SHEKEL_CHATWOOT_ACCOUNT_ID: nil) { expect(described_class.password_login_disabled?).to be(false) }
+      with_modified_env(SHEKEL_CHATWOOT_ACCOUNT_ID: '7', SHEKEL_OIDC_CLIENT_ID: nil) { expect(described_class.password_login_disabled?).to be(true) }
+    end
+  end
+
+  describe '.token_lifespan' do
+    it 'is SHEKEL_SESSION_LIFESPAN_HOURS (default 12) in staff mode and upstream otherwise' do
+      with_modified_env(SHEKEL_CHATWOOT_ACCOUNT_ID: nil) { expect(described_class.token_lifespan(2.months)).to eq(2.months) }
+      with_modified_env(SHEKEL_CHATWOOT_ACCOUNT_ID: '7', SHEKEL_SESSION_LIFESPAN_HOURS: nil) do
+        expect(described_class.token_lifespan(2.months)).to eq(12.hours)
+      end
+      with_modified_env(SHEKEL_CHATWOOT_ACCOUNT_ID: '7', SHEKEL_SESSION_LIFESPAN_HOURS: '8') do
+        expect(described_class.token_lifespan(2.months)).to eq(8.hours)
+      end
+    end
+  end
+
+  describe '.verify_configuration!' do
+    let(:production) { ActiveSupport::EnvironmentInquirer.new('production') }
+
+    it 'refuses to boot production in staff mode without an OIDC client id' do
+      with_modified_env(SHEKEL_CHATWOOT_ACCOUNT_ID: '7', SHEKEL_OIDC_CLIENT_ID: nil) do
+        expect { described_class.verify_configuration!(env: production) }.to raise_error(RuntimeError, /SHEKEL_OIDC_CLIENT_ID is blank/)
+        expect { described_class.verify_configuration!(env: ActiveSupport::EnvironmentInquirer.new('test')) }.not_to raise_error
+      end
+    end
+
+    it 'boots production when staff mode is configured or off' do
+      with_modified_env(SHEKEL_CHATWOOT_ACCOUNT_ID: '7', SHEKEL_OIDC_CLIENT_ID: 'chatwoot-test-client') do
+        expect { described_class.verify_configuration!(env: production) }.not_to raise_error
+      end
+      with_modified_env(SHEKEL_CHATWOOT_ACCOUNT_ID: nil, SHEKEL_OIDC_CLIENT_ID: nil) do
+        expect { described_class.verify_configuration!(env: production) }.not_to raise_error
+      end
     end
   end
 

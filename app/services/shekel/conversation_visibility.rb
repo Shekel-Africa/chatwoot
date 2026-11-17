@@ -2,10 +2,11 @@
 #
 # Shekel runs one WhatsApp inbox shared by every country, and every agent is a
 # member of every inbox (Shekel::StaffSync), so upstream's inbox-based access
-# would let every agent see every country. With Shekel sign-in enabled, an
-# agent (any non-administrator) sees a conversation only when its team is one
-# of their teams in that account or when it is assigned to them. Unteamed
-# conversations are visible to administrators and the assignee only.
+# would let every agent see every country. In staff mode
+# (Shekel::OidcSettings.staff_mode?), an agent (any non-administrator) sees a
+# conversation only when its team is one of their teams in that account or when
+# it is assigned to them. Unteamed conversations are visible to administrators
+# and the assignee only.
 # Administrators are unaffected.
 #
 # Called from small `# Shekel fork:` hooks in the conversation list paths
@@ -55,7 +56,7 @@ module Shekel::ConversationVisibility
 
   # Narrows a users relation (e.g. inbox members) to those who may see the conversation.
   def recipients(conversation:, users:)
-    return users unless Shekel::OidcSettings.enabled?
+    return users unless Shekel::OidcSettings.staff_mode?
 
     users.where(id: audience_ids(conversation.account_id, conversation.team_id, conversation.assignee_id))
   end
@@ -63,7 +64,7 @@ module Shekel::ConversationVisibility
   # Agents who could see the conversation before a team or assignee change and
   # cannot any more. `changed_attributes` is the conversation's previous_changes.
   def lost_audience(conversation:, changed_attributes:)
-    return User.none unless Shekel::OidcSettings.enabled?
+    return User.none unless Shekel::OidcSettings.staff_mode?
 
     changes = (changed_attributes || {}).with_indifferent_access
     previous_team_id = changes.key?(:team_id) ? changes[:team_id].first : conversation.team_id
@@ -78,9 +79,9 @@ module Shekel::ConversationVisibility
   # still could not see it and it has no assignee, it is assigned to them.
   # `attributes` are the new conversation's (account_id, team_id, assignee_id).
   def creation_defaults(user:, attributes:)
-    return {} unless user.is_a?(User) && Shekel::OidcSettings.enabled?
+    return {} unless user.is_a?(User) && Shekel::OidcSettings.staff_mode?
 
-    account = Account.find(attributes[:account_id])
+    account = Current.account&.id == attributes[:account_id] ? Current.account : Account.find(attributes[:account_id])
     restricted?(user: user, account: account) ? agent_creation_defaults(user, account, attributes) : {}
   end
 
@@ -94,7 +95,7 @@ module Shekel::ConversationVisibility
   end
 
   def restricted?(user:, account:)
-    return false unless Shekel::OidcSettings.enabled? && user.is_a?(User)
+    return false unless Shekel::OidcSettings.staff_mode? && user.is_a?(User)
 
     memo(user, [:restricted, account.id]) do
       !AccountUser.exists?(account_id: account.id, user_id: user.id, role: :administrator)

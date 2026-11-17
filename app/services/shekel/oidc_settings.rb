@@ -6,6 +6,13 @@
 # SHEKEL_OIDC_CLIENT_ID is set. Required settings are read with ENV.fetch so a
 # half-configured provider fails loudly instead of redirecting somewhere wrong.
 #
+# Staff mode (SHEKEL_CHATWOOT_ACCOUNT_ID set) is what turns the restrictions on:
+# team-scoped visibility, no password or other SSO sign-in, no personal API
+# tokens and the short session. It keys on the account id rather than the OIDC
+# client id so that losing the OIDC settings fails closed (nobody signs in)
+# instead of open (everyone sees everything); production refuses to boot in
+# that state (config/initializers/shekel_staff_mode.rb).
+#
 # See docs/shekel/LOCAL_OIDC_LOGIN.md for the variables and the client to register.
 class Shekel::OidcSettings
   PROVIDER = 'shekel'.freeze
@@ -19,9 +26,32 @@ class Shekel::OidcSettings
     ENV.fetch('SHEKEL_OIDC_CLIENT_ID', '').present?
   end
 
-  # Staff sign in through Shekel only once Shekel sign-in is configured.
+  # The Shekel deployment: staff are provisioned into SHEKEL_CHATWOOT_ACCOUNT_ID
+  # and every Shekel restriction applies. Unset in development and upstream specs.
+  def self.staff_mode?
+    ENV.fetch('SHEKEL_CHATWOOT_ACCOUNT_ID', '').strip.present?
+  end
+
+  # In staff mode, staff sign in through Shekel only.
   def self.password_login_disabled?
-    enabled?
+    staff_mode?
+  end
+
+  # devise_token_auth session lifespan (config/initializers/devise_token_auth.rb):
+  # SHEKEL_SESSION_LIFESPAN_HOURS (default 12) in staff mode, upstream's otherwise.
+  def self.token_lifespan(upstream)
+    return upstream unless staff_mode?
+
+    Integer(ENV.fetch('SHEKEL_SESSION_LIFESPAN_HOURS', '12')).hours
+  end
+
+  # Raised at boot in production (config/initializers/shekel_staff_mode.rb):
+  # staff mode with no Shekel sign-in would leave nobody able to sign in.
+  def self.verify_configuration!(env: Rails.env)
+    return unless env.production? && staff_mode? && !enabled?
+
+    raise 'Shekel staff mode is on (SHEKEL_CHATWOOT_ACCOUNT_ID is set) but SHEKEL_OIDC_CLIENT_ID is blank: ' \
+          'set the SHEKEL_OIDC_* variables (docs/shekel/LOCAL_OIDC_LOGIN.md) or unset SHEKEL_CHATWOOT_ACCOUNT_ID'
   end
 
   # Hostname Meta delivers webhooks to. Requests on it may reach only the channel
