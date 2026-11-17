@@ -22,3 +22,6 @@ class Dispatcher
     @async_dispatcher.load_listeners
   end
 end
+
+# Shekel fork: audit actor capture, see Shekel::AuditContext.
+Dispatcher.prepend(Shekel::AuditContext)

@@ -124,6 +124,29 @@ RSpec.describe 'Shekel OIDC staff sign-in', type: :request do
       end
     end
 
+    it 'records staff.signed_in in the audit log' do
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'agent@shekel.test')
+
+        complete_callback
+
+        expect(Shekel::AuditEvent.where(action: 'staff.signed_in').sole).to have_attributes(
+          account_id: account.id, actor_type: 'User', actor_id: agent.id, subject_type: 'User', subject_id: agent.id,
+          metadata: { 'provider' => 'shekel' }
+        )
+      end
+    end
+
+    it 'does not record a refused sign-in' do
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'agent@shekel.test', realm: 'user')
+
+        expect_refused_at_first_hop
+
+        expect(Shekel::AuditEvent.count).to eq(0)
+      end
+    end
+
     it 'syncs an agent without the CRM admin scope as an agent' do
       create(:account_user, account: account, user: agent, role: :administrator)
 

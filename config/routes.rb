@@ -302,6 +302,10 @@ Rails.application.routes.draw do
               post :rerun
             end
           end
+          # Shekel fork: CSV export of the append-only audit log.
+          namespace :shekel do
+            resources :audit_events, only: [:index]
+          end
           resources :data_imports, only: [:index, :show, :create] do
             collection do
               post :validate_source

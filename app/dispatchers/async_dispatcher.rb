@@ -19,7 +19,8 @@ class AsyncDispatcher < BaseDispatcher
       ParticipationListener.instance,
       Conversations::UnreadCounts::Listener.instance,
       ReportingEventListener.instance,
-      WebhookListener.instance
+      WebhookListener.instance,
+      Shekel::AuditListener.instance # Shekel fork: append-only audit log
     ]
   end
 end

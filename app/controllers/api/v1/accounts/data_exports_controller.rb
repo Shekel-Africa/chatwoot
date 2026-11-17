@@ -20,6 +20,7 @@ class Api::V1::Accounts::DataExportsController < Api::V1::Accounts::BaseControll
 
   def create
     @data_export = creation_service(request.request_parameters).perform
+    shekel_audit_export(@data_export)
     render :show
   end
 
@@ -34,6 +35,7 @@ class Api::V1::Accounts::DataExportsController < Api::V1::Accounts::BaseControll
       end
     end
     @data_export = creation_service(previous.export_options).perform
+    shekel_audit_export(@data_export)
     render :show
   end
 

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_11_18_000001) do
+ActiveRecord::Schema[7.1].define(version: 2026_11_18_000002) do
   # These extensions should be enabled to support this database
   enable_extension "pg_stat_statements"
   enable_extension "pg_trgm"
@@ -1697,6 +1697,20 @@ ActiveRecord::Schema[7.1].define(version: 2026_11_18_000001) do
     t.index ["account_id", "metric", "date"], name: "index_rollup_timeseries"
   end
 
+  create_table "shekel_audit_events", force: :cascade do |t|
+    t.bigint "account_id"
+    t.string "actor_type"
+    t.bigint "actor_id"
+    t.string "action", null: false
+    t.string "subject_type"
+    t.bigint "subject_id"
+    t.jsonb "metadata", default: {}, null: false
+    t.inet "ip_address"
+    t.datetime "created_at", null: false
+    t.index ["account_id", "created_at"], name: "index_shekel_audit_events_on_account_id_and_created_at"
+    t.index ["subject_type", "subject_id"], name: "index_shekel_audit_events_on_subject_type_and_subject_id"
+  end
+
   create_table "shekel_tenant_teams", force: :cascade do |t|
     t.bigint "account_id", null: false
     t.string "tenant_id", null: false
@@ -1939,6 +1953,14 @@ ActiveRecord::Schema[7.1].define(version: 2026_11_18_000001) do
       before(:insert).
       for_each(:row) do
     "NEW.display_id := nextval('camp_dpid_seq_' || NEW.account_id);"
+  end
+
+  create_trigger("shekel_audit_events_append_only", :generated => true, :compatibility => 1).
+      on("shekel_audit_events").
+      name("shekel_audit_events_append_only").
+      before(:update, :delete).
+      for_each(:row) do
+    "RAISE EXCEPTION 'shekel_audit_events is append-only';"
   end
 
 end

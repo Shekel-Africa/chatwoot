@@ -61,6 +61,8 @@ module ShekelOidcSignIn
     ).call
 
     sign_in_user
+    Shekel::Audit.record(action: 'staff.signed_in', actor: @resource, subject: @resource, account: account,
+                         metadata: { provider: Shekel::OidcSettings::PROVIDER }, ip: request.remote_ip)
   end
 
   def shekel_staff_sign_in_allowed?(omniauth_auth)

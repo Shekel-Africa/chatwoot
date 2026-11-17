@@ -1,4 +1,5 @@
-class Api::V1::Accounts::ConversationsController < Api::V1::Accounts::BaseController
+# Shekel fork: the audit-log call sites (show, transcript) push the class one line past Metrics/ClassLength.
+class Api::V1::Accounts::ConversationsController < Api::V1::Accounts::BaseController # rubocop:disable Metrics/ClassLength
   include Events::Types
   include DateRangeHelper
   include HmacConcern
@@ -36,7 +37,7 @@ class Api::V1::Accounts::ConversationsController < Api::V1::Accounts::BaseContro
                                 .per(ATTACHMENT_RESULTS_PER_PAGE)
   end
 
-  def show; end
+  def show = shekel_audit_view(@conversation)
 
   def create
     ActiveRecord::Base.transaction do
@@ -77,6 +78,7 @@ class Api::V1::Accounts::ConversationsController < Api::V1::Accounts::BaseContro
 
     ConversationReplyMailer.with(account: @conversation.account).conversation_transcript(@conversation, params[:email])&.deliver_later
     @conversation.account.increment_email_sent_count
+    shekel_audit('conversation.transcript_sent', subject: @conversation, metadata: { display_id: @conversation.display_id })
     head :ok
   end
 
