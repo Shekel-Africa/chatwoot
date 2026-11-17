@@ -201,7 +201,8 @@ class Api::V1::Accounts::ConversationsController < Api::V1::Accounts::BaseContro
   def contact
     return if params[:contact_id].blank?
 
-    @contact = Current.account.contacts.find(params[:contact_id])
+    # Shekel fork: an agent starts conversations only with contacts they can see.
+    @contact = Shekel::ContactVisibility.contacts(user: Current.user, account: Current.account).find(params[:contact_id])
   end
 
   def contact_inbox

@@ -4,6 +4,7 @@ class Api::V1::Accounts::Contacts::BaseController < Api::V1::Accounts::BaseContr
   private
 
   def ensure_contact
-    @contact = Current.account.contacts.find(params[:contact_id])
+    # Shekel fork: another team's contact reads as not found.
+    @contact = Shekel::ContactVisibility.contacts(user: Current.user, account: Current.account).find(params[:contact_id])
   end
 end

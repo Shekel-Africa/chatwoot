@@ -136,6 +136,8 @@ class Api::V1::Accounts::ContactsController < Api::V1::Accounts::BaseController
   end
 
   def fetch_contacts(contacts)
+    # Shekel fork: an agent sees only the contacts of their teams' conversations.
+    contacts = Shekel::ContactVisibility.scope(user: Current.user, account: Current.account, relation: contacts)
     # Build includes hash to avoid separate query when contact_inboxes are needed
     includes_hash = { avatar_attachment: [:blob] }
     includes_hash[:contact_inboxes] = { inbox: :channel } if @include_contact_inboxes
@@ -147,6 +149,8 @@ class Api::V1::Accounts::ContactsController < Api::V1::Accounts::BaseController
   end
 
   def fetch_contacts_with_has_more(contacts)
+    # Shekel fork: an agent sees only the contacts of their teams' conversations.
+    contacts = Shekel::ContactVisibility.scope(user: Current.user, account: Current.account, relation: contacts)
     includes_hash = { avatar_attachment: [:blob] }
     includes_hash[:contact_inboxes] = { inbox: :channel } if @include_contact_inboxes
 
@@ -211,7 +215,8 @@ class Api::V1::Accounts::ContactsController < Api::V1::Accounts::BaseController
   end
 
   def fetch_contact
-    contact_scope = Current.account.contacts
+    # Shekel fork: another team's contact reads as not found.
+    contact_scope = Shekel::ContactVisibility.contacts(user: Current.user, account: Current.account)
     contact_scope = contact_scope.includes(contact_inboxes: [:inbox]) if @include_contact_inboxes
     @contact = contact_scope.find(params[:id])
   end

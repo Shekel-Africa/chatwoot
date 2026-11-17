@@ -9,11 +9,19 @@
 # Administrators are unaffected.
 #
 # Called from small `# Shekel fork:` hooks in the conversation list paths
-# (Conversations::PermissionFilterService, SearchService), ConversationPolicy
-# (every per-conversation endpoint and NotificationBuilder) and
-# ActionCableListener (real-time events).
+# (Conversations::PermissionFilterService, SearchService, the unread counter),
+# ConversationPolicy (every per-conversation endpoint and NotificationBuilder),
+# conversation creation and ActionCableListener (real-time events).
+# Contacts follow the same rule through Shekel::ContactVisibility.
+#
+# Only staff users are narrowed; agent bots and other actors are not. The role
+# and team lookups for the requesting user are memoised on Current, which is
+# reset at the end of every API request.
 module Shekel::ConversationVisibility
   module_function
+
+  # Sent to agents who can no longer see a conversation; the dashboard drops the row.
+  HIDDEN_EVENT = 'shekel.conversation.hidden'.freeze
 
   # Narrows a conversations relation to what the user may see.
   def scope(user:, account:, relation:)
@@ -49,19 +57,71 @@ module Shekel::ConversationVisibility
   def recipients(conversation:, users:)
     return users unless Shekel::OidcSettings.enabled?
 
-    allowed = AccountUser.where(account_id: conversation.account_id, role: :administrator).pluck(:user_id)
-    allowed << conversation.assignee_id if conversation.assignee_id
-    allowed += TeamMember.where(team_id: conversation.team_id).pluck(:user_id) if conversation.team_id
-    users.where(id: allowed)
+    users.where(id: audience_ids(conversation.account_id, conversation.team_id, conversation.assignee_id))
+  end
+
+  # Agents who could see the conversation before a team or assignee change and
+  # cannot any more. `changed_attributes` is the conversation's previous_changes.
+  def lost_audience(conversation:, changed_attributes:)
+    return User.none unless Shekel::OidcSettings.enabled?
+
+    changes = (changed_attributes || {}).with_indifferent_access
+    previous_team_id = changes.key?(:team_id) ? changes[:team_id].first : conversation.team_id
+    previous_assignee_id = changes.key?(:assignee_id) ? changes[:assignee_id].first : conversation.assignee_id
+    before = audience_ids(conversation.account_id, previous_team_id, previous_assignee_id)
+    after = audience_ids(conversation.account_id, conversation.team_id, conversation.assignee_id)
+    User.where(id: before - after)
+  end
+
+  # Defaults for a conversation an agent starts, so it stays visible to them:
+  # with no team, it goes to the agent's team when they have exactly one; if they
+  # still could not see it and it has no assignee, it is assigned to them.
+  # `attributes` are the new conversation's (account_id, team_id, assignee_id).
+  def creation_defaults(user:, attributes:)
+    return {} unless user.is_a?(User) && Shekel::OidcSettings.enabled?
+
+    account = Account.find(attributes[:account_id])
+    restricted?(user: user, account: account) ? agent_creation_defaults(user, account, attributes) : {}
+  end
+
+  def agent_creation_defaults(user, account, attributes)
+    own_teams = team_ids(user, account)
+    team_id = attributes[:team_id]
+    defaults = {}
+    defaults[:team_id] = team_id = own_teams.first if team_id.blank? && own_teams.one?
+    defaults[:assignee_id] = user.id if attributes[:assignee_id].blank? && own_teams.exclude?(team_id.to_i)
+    defaults
   end
 
   def restricted?(user:, account:)
-    return false unless Shekel::OidcSettings.enabled?
+    return false unless Shekel::OidcSettings.enabled? && user.is_a?(User)
 
-    !AccountUser.exists?(account_id: account.id, user_id: user.id, role: :administrator)
+    memo(user, [:restricted, account.id]) do
+      !AccountUser.exists?(account_id: account.id, user_id: user.id, role: :administrator)
+    end
   end
 
   def team_ids(user, account)
-    TeamMember.joins(:team).where(user_id: user.id, teams: { account_id: account.id }).pluck(:team_id)
+    memo(user, [:team_ids, account.id]) do
+      TeamMember.joins(:team).where(user_id: user.id, teams: { account_id: account.id }).pluck(:team_id)
+    end
+  end
+
+  def audience_ids(account_id, team_id, assignee_id)
+    ids = AccountUser.where(account_id: account_id, role: :administrator).pluck(:user_id)
+    ids << assignee_id if assignee_id
+    ids += TeamMember.where(team_id: team_id).pluck(:user_id) if team_id
+    ids.uniq
+  end
+
+  # Per-request memo for the requesting user only; other users are looked up
+  # afresh. The memo is tied to the Current.user object, which each request loads
+  # anew, so a thread that never resets Current cannot serve a stale answer.
+  def memo(user, key)
+    return yield unless Current.user.is_a?(User) && Current.user.id == user.id
+
+    Current.shekel_visibility = { owner: Current.user.object_id } if Current.shekel_visibility&.dig(:owner) != Current.user.object_id
+    cache = Current.shekel_visibility
+    cache.key?(key) ? cache[key] : (cache[key] = yield)
   end
 end

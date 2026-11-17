@@ -42,6 +42,23 @@ RSpec.describe Shekel::ConversationVisibility do
       expect(scoped(admin)).to contain_exactly(ng_conversation, ke_conversation, unteamed_conversation)
     end
 
+    it 'returns the relation unchanged for an agent bot' do
+      relation = account.conversations
+      expect(described_class.scope(user: create(:agent_bot), account: account, relation: relation)).to equal(relation)
+    end
+
+    it 'memoises the requesting user only for the current request' do
+      Current.user = ng_agent
+      expect(scoped(ng_agent)).to contain_exactly(ng_conversation)
+      ng_team.remove_members([ng_agent.id])
+      expect(scoped(ng_agent)).to contain_exactly(ng_conversation)
+
+      Current.user = User.find(ng_agent.id)
+      expect(scoped(ng_agent)).to be_empty
+    ensure
+      Current.reset
+    end
+
     context 'when Shekel sign-in is disabled' do
       let(:enabled) { false }
 
@@ -87,7 +104,40 @@ RSpec.describe Shekel::ConversationVisibility do
     end
   end
 
+  describe '.lost_audience' do
+    it 'names the agents of the previous team and the previous assignee only' do
+      ng_conversation.update!(assignee: ng_agent)
+      ng_conversation.update!(team: ke_team, assignee: nil)
+
+      lost = described_class.lost_audience(conversation: ng_conversation, changed_attributes: ng_conversation.previous_changes)
+      expect(lost).to contain_exactly(ng_agent)
+    end
+  end
+
   describe 'hooks' do
+    it 'tells agents who lost a conversation to drop it' do
+      ng_conversation.update!(team: ke_team)
+      event = Events::Base.new(:'team.changed', Time.zone.now, conversation: ng_conversation,
+                                                               changed_attributes: ng_conversation.previous_changes)
+      allow(ActionCableBroadcastJob).to receive(:perform_later)
+
+      ActionCableListener.instance.team_changed(event)
+
+      expect(ActionCableBroadcastJob).to have_received(:perform_later)
+        .with([ng_agent.pubsub_token], described_class::HIDDEN_EVENT, { id: ng_conversation.display_id, account_id: account.id })
+      expect(ActionCableBroadcastJob).to have_received(:perform_later)
+        .with(satisfy { |tokens| tokens.include?(ke_agent.pubsub_token) && tokens.exclude?(ng_agent.pubsub_token) }, 'team.changed', anything)
+    end
+
+    it 'sends contact events only to administrators and agents who can see the contact' do
+      event = Events::Base.new(:'contact.updated', Time.zone.now, contact: ke_conversation.contact)
+      expect(ActionCableBroadcastJob).to receive(:perform_later) do |tokens, *|
+        expect(tokens).to contain_exactly(ke_agent.pubsub_token, admin.pubsub_token)
+      end
+
+      ActionCableListener.instance.contact_updated(event)
+    end
+
     it 'broadcasts conversation events only to agents who can see the conversation' do
       event = Events::Base.new(:'conversation.updated', Time.zone.now, conversation: ng_conversation)
       expect(ActionCableBroadcastJob).to receive(:perform_later) do |tokens, *|

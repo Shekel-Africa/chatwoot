@@ -183,6 +183,33 @@ in the granted scope).
   profile password change and devise_token_auth's registrations routes (`POST`, `PUT/PATCH`,
   `DELETE /auth`) are all refused.
 
+## Team-scoped visibility
+
+With `SHEKEL_OIDC_CLIENT_ID` set, an **agent** (any non-administrator) sees only part of the
+account (`Shekel::ConversationVisibility`, `Shekel::ContactVisibility`,
+`app/services/shekel/`). Administrators see everything.
+
+- **Conversations:** those whose team is one of the agent's teams, plus those assigned to the
+  agent. An unteamed conversation is visible to administrators and its assignee only. This
+  holds for the lists, counts (meta and unread counts), search, filters, every
+  per-conversation endpoint (another team's conversation answers 404), notifications,
+  mentions and ActionCable events. When a team or assignee change hides a conversation from an
+  agent, their dashboard receives `shekel.conversation.hidden` and drops the row.
+- **Contacts:** a contact is visible when at least one of its conversations is. **A contact
+  with no conversations is visible to administrators only**, so an agent cannot open one, or
+  start a conversation with one; an administrator (or the gateway) starts the first
+  conversation. Contact events go to administrators and the agents who can see the contact.
+- **Inbound WhatsApp conversations start unteamed**, so agents see them only once the gateway
+  or the triage team sets a team (or assigns one).
+- **Agent-created conversations:** a conversation an agent starts without a team goes to
+  their team when they have exactly one; otherwise, if they still could not see it and it has
+  no assignee, it is assigned to them.
+- **Integrations** (the Shailoq gateway and any other API client) must use an agent bot or an
+  administrator's access token, never an agent user's: an agent's token sees only that
+  agent's teams.
+- **Accepted:** notifications created before an agent left a team still appear in their
+  notification list with the conversation's metadata; opening one answers 404.
+
 ## Staging discovery returns 403 (nginx)
 
 `GET https://auth.shekel.africa/oauth/admin/.well-known/openid-configuration` returns an

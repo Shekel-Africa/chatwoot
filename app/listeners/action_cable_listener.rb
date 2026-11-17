@@ -243,3 +243,6 @@ class ActionCableListener < BaseListener
 end
 
 ActionCableListener.prepend_mod_with('ActionCableListener')
+
+# Shekel fork: team-scoped visibility for contact events and hidden conversations.
+ActionCableListener.prepend(Shekel::ActionCableListenerHooks)

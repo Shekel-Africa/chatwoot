@@ -173,6 +173,8 @@ class SearchService
     )
 
     contacts_query = apply_time_filter(contacts_query, 'last_activity_at') if current_account.feature_enabled?('advanced_search')
+    # Shekel fork: an agent sees only the contacts of their teams' conversations.
+    contacts_query = Shekel::ContactVisibility.scope(user: current_user, account: current_account, relation: contacts_query)
 
     @contacts = contacts_query.resolved_contacts(
       use_crm_v2: current_account.feature_enabled?('crm_v2')

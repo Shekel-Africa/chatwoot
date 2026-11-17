@@ -53,6 +53,8 @@ class Conversations::UnreadCounts::Builder
            .where(unread_since_last_seen_condition)
            .distinct
   end
+  # Shekel fork: public so Shekel::UnreadCounts can count what an agent may see.
+  public :unread_conversations
 
   def unread_since_last_seen_condition
     conversations = Conversation.arel_table

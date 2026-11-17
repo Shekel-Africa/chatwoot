@@ -153,6 +153,23 @@ describe('ActionCableConnector - Copilot Tests', () => {
     });
   });
 
+  describe('shekel.conversation.hidden', () => {
+    it('drops the conversation from the list and refreshes the stats', () => {
+      store.$store.commit = vi.fn();
+
+      actionCable.onReceived({
+        event: 'shekel.conversation.hidden',
+        data: { id: 42, account_id: 1 },
+      });
+
+      expect(store.$store.commit).toHaveBeenCalledWith(
+        'DELETE_CONVERSATION',
+        42
+      );
+      expect(emitter.emit).toHaveBeenCalledWith('fetch_conversation_stats');
+    });
+  });
+
   describe('conversation unread count event handlers', () => {
     it('should register the conversation.unread_count_changed event handler', () => {
       expect(Object.keys(actionCable.events)).toContain(
