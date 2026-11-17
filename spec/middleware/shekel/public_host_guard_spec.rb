@@ -35,8 +35,8 @@ RSpec.describe Shekel::PublicHostGuard, type: :request do
     end
   end
 
-  context 'with SHEKEL_PUBLIC_HOST set' do
-    around { |example| with_modified_env(SHEKEL_PUBLIC_HOST: public_host) { example.run } }
+  context 'with SHEKEL_STAFF_HOSTS and SHEKEL_PUBLIC_HOST set' do
+    around { |example| with_modified_env(SHEKEL_STAFF_HOSTS: "#{vpn_host},crm-admin.example.test", SHEKEL_PUBLIC_HOST: public_host) { example.run } }
 
     it 'whatsapp_verify_get_and_signed_post_pass_through' do
       channel = create(:channel_whatsapp, provider: 'whatsapp_cloud', sync_templates: false, validate_provider_config: false)
@@ -129,11 +129,41 @@ RSpec.describe Shekel::PublicHostGuard, type: :request do
       expect_bare_404
     end
 
-    it 'compares the host case-insensitively, ignoring the port and a trailing dot' do
-      ['CRM-Hooks.Example.Test', "#{public_host}:8443", "#{public_host}."].each do |host|
+    it 'compares the host case-insensitively, ignoring the port and trailing dots' do
+      ['CRM-Hooks.Example.Test', "#{public_host}:8443", "#{public_host}.", "#{public_host}.."].each do |host|
         request_as(host, :get, '/api/v1/profile')
         expect_bare_404
       end
+
+      ['CRM.Example.Test', "#{vpn_host}:3000", "#{vpn_host}.", "#{vpn_host}.."].each do |host|
+        request_as(host, :get, '/auth/validate_token')
+        expect(response).to have_http_status(:unauthorized), "#{host} was not let through"
+      end
+    end
+
+    it 'restricts a Host that is not a staff host, not only the public one' do
+      ['crm-hooks.example.test.evil.test', 'unknown.example.test', '10.0.0.5', 'localhost', "#{vpn_host}.evil.test"].each do |host|
+        request_as(host, :get, '/api/v1/profile')
+        expect_bare_404
+
+        request_as(host, :get, webhook_path)
+        expect(response).to have_http_status(:unauthorized), "#{host} did not reach the webhook"
+      end
+    end
+
+    it 'restricts a request with an empty or missing Host' do
+      app = ->(_env) { [200, {}, ['reached']] }
+      guard = described_class.new(app)
+
+      [{ 'HTTP_HOST' => '' }, { 'HTTP_HOST' => nil, 'SERVER_NAME' => vpn_host }].each do |headers|
+        expect(guard.call(Rack::MockRequest.env_for('/api/v1/profile', headers)).first).to eq(404)
+        expect(guard.call(Rack::MockRequest.env_for(webhook_path, headers)).first).to eq(200)
+      end
+    end
+
+    it 'gives every listed staff host full access' do
+      request_as('crm-admin.example.test', :get, '/health')
+      expect(response).to have_http_status(:success)
     end
 
     it 'does not trust X-Forwarded-Host' do
@@ -161,8 +191,44 @@ RSpec.describe Shekel::PublicHostGuard, type: :request do
     end
   end
 
-  it 'no_guard_when_public_host_is_unset' do
-    with_modified_env(SHEKEL_PUBLIC_HOST: nil) do
+  context 'with only SHEKEL_PUBLIC_HOST set' do
+    around { |example| with_modified_env(SHEKEL_STAFF_HOSTS: nil, SHEKEL_PUBLIC_HOST: public_host) { example.run } }
+
+    it 'restricts every Host, the VPN host included, and warns' do
+      allow(Rails.logger).to receive(:warn)
+
+      [public_host, vpn_host].each do |host|
+        request_as(host, :get, '/health')
+        expect_bare_404
+      end
+      request_as(vpn_host, :get, webhook_path)
+      expect(response).to have_http_status(:unauthorized)
+      expect(Rails.logger).to have_received(:warn).with(/SHEKEL_STAFF_HOSTS and SHEKEL_PUBLIC_HOST/).at_most(:once)
+    end
+  end
+
+  context 'with only SHEKEL_STAFF_HOSTS set' do
+    around { |example| with_modified_env(SHEKEL_STAFF_HOSTS: vpn_host, SHEKEL_PUBLIC_HOST: nil) { example.run } }
+
+    it 'gives the staff host full access and restricts every other Host' do
+      request_as(vpn_host, :get, '/health')
+      expect(response).to have_http_status(:success)
+
+      request_as(public_host, :get, '/health')
+      expect_bare_404
+    end
+
+    it 'warns once per process' do
+      allow(Rails.logger).to receive(:warn)
+      guard = described_class.new(->(_env) { [200, {}, []] })
+
+      2.times { guard.call(Rack::MockRequest.env_for('/health', 'HTTP_HOST' => public_host)) }
+      expect(Rails.logger).to have_received(:warn).with(/SHEKEL_STAFF_HOSTS and SHEKEL_PUBLIC_HOST/).once
+    end
+  end
+
+  it 'no_guard_when_staff_hosts_and_public_host_are_unset' do
+    with_modified_env(SHEKEL_STAFF_HOSTS: nil, SHEKEL_PUBLIC_HOST: nil) do
       request_as(public_host, :get, '/health')
       expect(response).to have_http_status(:success)
 
@@ -171,8 +237,8 @@ RSpec.describe Shekel::PublicHostGuard, type: :request do
     end
   end
 
-  it 'treats a blank SHEKEL_PUBLIC_HOST as unset' do
-    with_modified_env(SHEKEL_PUBLIC_HOST: '') do
+  it 'treats blank values as unset' do
+    with_modified_env(SHEKEL_STAFF_HOSTS: ' ', SHEKEL_PUBLIC_HOST: '') do
       request_as('', :get, '/health')
       expect(response).to have_http_status(:success)
     end

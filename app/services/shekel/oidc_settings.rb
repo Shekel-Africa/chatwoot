@@ -54,29 +54,49 @@ class Shekel::OidcSettings
           'set the SHEKEL_OIDC_* variables (docs/shekel/LOCAL_OIDC_LOGIN.md) or unset SHEKEL_CHATWOOT_ACCOUNT_ID'
   end
 
-  # Hostname Meta delivers webhooks to. Requests on it may reach only the channel
-  # webhook paths (Shekel::PublicHostGuard). Nil leaves the guard off, for local
-  # development.
+  # Hostname Meta delivers webhooks to (SHEKEL_PUBLIC_HOST), or nil. Together
+  # with staff_hosts it switches Shekel::PublicHostGuard on; nil and no staff
+  # hosts leaves the guard off, for local development.
   def self.public_host
-    raw = ENV.fetch('SHEKEL_PUBLIC_HOST', '').strip
-    return nil if raw.empty?
+    configured_host(ENV.fetch('SHEKEL_PUBLIC_HOST', ''), 'SHEKEL_PUBLIC_HOST')
+  end
 
-    host = raw.downcase.sub(%r{\A[a-z][a-z0-9+.-]*://}, '').sub(%r{[/?#].*\z}, '').sub(/:\d+\z/, '').chomp('.')
-    warn_public_host(host) if host != raw.downcase || !host.match?(HOSTNAME)
-    host
+  # Hostnames staff reach the dashboard, API, sign-in and /cable on
+  # (SHEKEL_STAFF_HOSTS, comma-separated). Every other Host gets only the
+  # channel webhooks (Shekel::PublicHostGuard).
+  def self.staff_hosts
+    ENV.fetch('SHEKEL_STAFF_HOSTS', '').split(',').filter_map { |raw| configured_host(raw, 'SHEKEL_STAFF_HOSTS') }
+  end
+
+  # Case-insensitive, port and trailing dots ignored. Shared with the guard so
+  # a configured host and a request Host compare the same way.
+  def self.normalize_host(host)
+    host.to_s.strip.downcase.sub(/:\d+\z/, '').sub(/\.+\z/, '')
   end
 
   HOSTNAME = /\A[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\z/
   private_constant :HOSTNAME
 
-  # Logs once per process: public_host runs on every request.
-  def self.warn_public_host(host)
-    return if @public_host_warned
+  # A bare hostname from a configured value; a scheme, path or port is
+  # stripped with a warning.
+  def self.configured_host(raw, variable)
+    raw = raw.strip
+    return nil if raw.empty?
 
-    @public_host_warned = true
-    Rails.logger.warn("[shekel] SHEKEL_PUBLIC_HOST should be a bare hostname; using #{host.inspect} after normalising")
+    host = normalize_host(raw.downcase.sub(%r{\A[a-z][a-z0-9+.-]*://}, '').sub(%r{[/?#].*\z}, ''))
+    warn_host(variable, host) if host != raw.downcase || !host.match?(HOSTNAME)
+    host.presence
   end
-  private_class_method :warn_public_host
+  private_class_method :configured_host
+
+  # Logs once per variable and process: the hosts are read on every request.
+  def self.warn_host(variable, host)
+    @warned_hosts ||= Set.new
+    return unless @warned_hosts.add?(variable)
+
+    Rails.logger.warn("[shekel] #{variable} should list bare hostnames; using #{host.inspect} after normalising")
+  end
+  private_class_method :warn_host
 
   # The one Chatwoot account that Shekel staff are provisioned into.
   def self.account_id
