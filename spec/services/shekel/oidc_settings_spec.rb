@@ -89,4 +89,38 @@ RSpec.describe Shekel::OidcSettings do
       end
     end
   end
+
+  describe '.public_host' do
+    before { described_class.instance_variable_set(:@public_host_warned, nil) }
+
+    it 'is nil when unset or blank' do
+      with_modified_env(SHEKEL_PUBLIC_HOST: nil) { expect(described_class.public_host).to be_nil }
+      with_modified_env(SHEKEL_PUBLIC_HOST: '  ') { expect(described_class.public_host).to be_nil }
+    end
+
+    it 'returns a bare hostname unchanged, without warning' do
+      allow(Rails.logger).to receive(:warn)
+      with_modified_env(SHEKEL_PUBLIC_HOST: 'crm-hooks.example.test') do
+        expect(described_class.public_host).to eq('crm-hooks.example.test')
+      end
+      expect(Rails.logger).not_to have_received(:warn)
+    end
+
+    it 'strips scheme, path, port and case, and warns once' do
+      allow(Rails.logger).to receive(:warn)
+      with_modified_env(SHEKEL_PUBLIC_HOST: 'HTTPS://CRM-Hooks.Example.test:8443/webhooks/') do
+        expect(described_class.public_host).to eq('crm-hooks.example.test')
+        described_class.public_host
+      end
+      expect(Rails.logger).to have_received(:warn).with(/bare hostname/).once
+    end
+
+    it 'warns when the value is not a hostname' do
+      allow(Rails.logger).to receive(:warn)
+      with_modified_env(SHEKEL_PUBLIC_HOST: 'not a host') do
+        described_class.public_host
+      end
+      expect(Rails.logger).to have_received(:warn).with(/bare hostname/)
+    end
+  end
 end

@@ -28,9 +28,25 @@ class Shekel::OidcSettings
   # webhook paths (Shekel::PublicHostGuard). Nil leaves the guard off, for local
   # development.
   def self.public_host
-    host = ENV.fetch('SHEKEL_PUBLIC_HOST', '').strip
-    host.empty? ? nil : Shekel::PublicHostGuard.normalize_host(host)
+    raw = ENV.fetch('SHEKEL_PUBLIC_HOST', '').strip
+    return nil if raw.empty?
+
+    host = raw.downcase.sub(%r{\A[a-z][a-z0-9+.-]*://}, '').sub(%r{[/?#].*\z}, '').sub(/:\d+\z/, '').chomp('.')
+    warn_public_host(host) if host != raw.downcase || !host.match?(HOSTNAME)
+    host
   end
+
+  HOSTNAME = /\A[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\z/
+  private_constant :HOSTNAME
+
+  # Logs once per process: public_host runs on every request.
+  def self.warn_public_host(host)
+    return if @public_host_warned
+
+    @public_host_warned = true
+    Rails.logger.warn("[shekel] SHEKEL_PUBLIC_HOST should be a bare hostname; using #{host.inspect} after normalising")
+  end
+  private_class_method :warn_public_host
 
   # The one Chatwoot account that Shekel staff are provisioned into.
   def self.account_id
