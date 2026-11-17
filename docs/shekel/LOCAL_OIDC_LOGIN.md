@@ -15,9 +15,9 @@ seat; it includes SAML/SSO, custom roles, audit logs, SLA, Captain).
   overlays (`prepend_mod_with`, `enterprise/app/**` behaviour) are not loaded.
 - `ENV.fetch('DISABLE_ENTERPRISE', false)` treats **any** value as "disabled", including
   the string `false`. Set it to `true` and never to anything else.
-- The `enterprise/` files are still in the tree (eager-load paths), only inert. A
-  production image must also delete the directory (`rm -rf enterprise spec/enterprise`)
-  before build; that is for the production build work, not this local setup.
+- The `enterprise/` files are still in the local tree (eager-load paths), only inert. The
+  image built from `docker/Dockerfile` deletes them (`rm -rf enterprise spec/enterprise`,
+  as upstream's CE build does) and sets `DISABLE_ENTERPRISE=true CW_EDITION=ce`.
 
 ## Run it
 
@@ -39,20 +39,23 @@ for Vite) so the URL is still `localhost:3000`: the redirect URI is exact-match.
 moves Postgres, Redis and Mailhog to loopback ports 55432, 56379 and 58025, because the
 shared dev host already uses 6379, 1025 and 8025.
 
-### Create an agent to sign in as
+### Create the account staff are provisioned into
 
-Sign-in only matches **existing** agents by email; nothing is auto-provisioned. Create the
-installation's first account through the onboarding screen, or from a console:
+Staff are provisioned on their first Shekel sign-in into one account, set by
+`SHEKEL_CHATWOOT_ACCOUNT_ID`. Create it through the onboarding screen, or from a console:
 
 ```sh
-$DC run --rm rails bundle exec rails runner '
-  account = Account.create!(name: "Shekel Local")
-  user = User.create!(name: "Local Admin", email: "<your admin email>", password: "<a strong password>", confirmed_at: Time.current)
-  AccountUser.create!(account: account, user: user, role: :administrator)
-'
+$DC run --rm rails bundle exec rails runner 'puts Account.create!(name: "Shekel Local").id'
 ```
 
-Use the same email as your authentication-api admin account.
+### Map tenants to teams
+
+Staff join the team mapped from each tenant in their `tenants` claim:
+
+```sh
+$DC run --rm rails bundle exec rails "shekel:map_tenant_team[<tenant uuid>,Acme Motors]"  # creates the team if missing
+$DC run --rm rails bundle exec rails shekel:list_tenant_teams
+```
 
 ## Environment variables
 
@@ -71,6 +74,8 @@ All go in the worktree's `.env` (gitignored; on the NAS it is a hardlink to
 | `SHEKEL_OIDC_TOKEN_URL` | `<host>/oauth/admin/token` |
 | `SHEKEL_OIDC_USERINFO_URL` | `<host>/oauth/admin/userinfo` |
 | `SHEKEL_OIDC_JWKS_URL` | `<host>/oauth/jwks` (shared by both realms) |
+| `SHEKEL_CHATWOOT_ACCOUNT_ID` | Required for sign-in. The account staff are provisioned into. |
+| `SHEKEL_SESSION_LIFESPAN_HOURS` | Optional, default `12`. How long a staff session lasts when Shekel sign-in is configured (devise_token_auth `token_lifespan`). Read at boot. |
 | `SHEKEL_OIDC_DISCOVERY` | Optional. `true` reads the four URLs from `<issuer>/.well-known/openid-configuration` instead. Leave it off on staging until the nginx fix below is in. |
 
 `<host>` is `https://auth.shekel.africa` on staging. The endpoint paths come from
@@ -82,7 +87,8 @@ authentication-api (`routes/oauth.php`, `routes/oauth-protocol.php`,
 - `config/initializers/omniauth.rb` mounts an `omniauth_openid_connect` strategy named
   `shekel`. Its settings are read from `SHEKEL_OIDC_*` per request by
   `Shekel::OidcSettings` (`app/services/shekel/oidc_settings.rb`): authorization code flow,
-  PKCE (S256), state, nonce, `client_secret_basic`, scopes `openid email profile`. The ID
+  PKCE (S256), state, nonce, `client_secret_basic`, scopes
+  `openid email profile tenants customer_comms.access customer_comms.admin`. The ID
   token is verified against the JWKS for signature (RS256 only, pinned with
   `client_signing_alg`), issuer, audience and nonce. `realm` is read from the merged
   ID-token + userinfo claims (`extra.raw_info`); the ID-token value wins.
@@ -94,12 +100,20 @@ authentication-api (`routes/oauth.php`, `routes/oauth-protocol.php`,
     refused even if the email matches an agent). This is checked on the first callback hop
     (`redirect_callbacks`), because devise_token_auth drops `extra` (the ID-token claims)
     from the auth hash it carries to the second hop; a one-shot session flag passes the
-    result on;
-  - the email is matched case-insensitively to an existing `User`; no match means
-    `/app/login?error=no-account-found`, and nothing is created;
-  - a match signs in through upstream's SSO-token path (the same as Google sign-in).
-- Local email/password login still works. It is for local testing only; the spec requires
-  it to be disabled for staff before any real deployment.
+    result on, together with the tenant ids from the `tenants` claim and whether the
+    token response's `scope` (`credentials.scope`) grants `customer_comms.admin`;
+  - `Shekel::StaffSync` (`app/services/shekel/staff_sync.rb`) then provisions and syncs
+    the staff member: creates the user if the email is unknown (random password,
+    confirmed), sets the role (administrator with `customer_comms.admin`, else agent),
+    joins the teams mapped from held tenants and leaves mapped teams for tenants no
+    longer held (unmapped teams are untouched), and adds them to every inbox. If the
+    `tenants` claim is absent (an older IdP), team membership is left as it is and a
+    warning is logged; an explicit empty list removes them from all mapped teams;
+  - the user signs in through upstream's SSO-token path (the same as Google sign-in).
+- With `SHEKEL_OIDC_CLIENT_ID` set, password sign-in, password reset and the profile
+  password change are refused ("Sign in with Shekel instead.",
+  `ShekelPasswordLoginGuard`), and the login page hides the password form. The SSO-token
+  sign-in and API access tokens still work.
 
 ### What the admin realm gives us
 
@@ -107,12 +121,13 @@ From authentication-api (`IdTokenClaimsBuilder`, `HasOidcSubject::identityClaims
 `OIDCController::userinfo`):
 
 - **ID token:** `iss` (`.../oauth/admin`), `aud` (client id), `sub` (admin id), `email`,
-  `name`, `realm` = `admin`, `nonce`. No `tenant_id` (admins sign in to no tenant) and no
-  `company_id`.
-- **Userinfo:** `sub`, plus `email` with the `email` scope and `name` with `profile`.
-- Neither carries the admin's tenants (`admin_client`, `all_tenants`). The team/inbox sync
-  in spec section 6.2 will need another source, e.g. an admin API call with the access
-  token or a new claim in authentication-api.
+  `name`, `realm` = `admin`, `nonce`, and with the `tenants` scope
+  `tenants: [{"id": "<uuid>", "slug": <string or null>, "country": <lowercase iso or null>}]`
+  (always a list; empty when none). Only `id` is used.
+- **Userinfo:** `sub`, plus `email` with the `email` scope, `name` with `profile` and
+  `tenants` with `tenants`.
+- **Token response:** `scope`, the granted scopes. Sign-in is refused by the IdP without
+  `customer_comms.access`; `customer_comms.admin` is granted to CRM admins only.
 
 ## Register the OAuth client (admin portal)
 
@@ -124,7 +139,7 @@ Ask an authentication-api admin to register, on **staging**:
 | Name | `Chatwoot (local dev)` |
 | Grant types | `authorization_code` only (no refresh token needed; Chatwoot keeps its own session) |
 | Redirect URIs | `http://localhost:3000/omniauth/shekel/callback` (exact match) |
-| Scopes | `openid`, `email`, `profile` |
+| Scopes | `openid`, `email`, `profile`, `tenants`, `customer_comms.access`, `customer_comms.admin` |
 | Confidential | yes (has a secret; `client_secret_basic`) |
 | PKCE | S256 (sent by Chatwoot; fine whether or not the client requires it) |
 | first_party | `true`, so staff are not shown a consent screen |
@@ -189,11 +204,17 @@ uses the same snippet; it would have the same problem. Until then, keep
 $DC run --rm --no-deps -e RAILS_ENV=test rails bundle exec rails db:schema:load
 $DC run --rm --no-deps -e RAILS_ENV=test rails bundle exec rspec \
   spec/controllers/devise/shekel_oidc_callbacks_spec.rb spec/services/shekel \
+  spec/controllers/devise_overrides/shekel_password_login_guard_spec.rb \
   spec/controllers/devise/omniauth_callbacks_controller_spec.rb
 ```
 
 The specs set every `SHEKEL_OIDC_*` variable they depend on, so the real values that
 compose loads from `.env` do not leak into them.
+
+Upstream's sign-in and password specs (`spec/controllers/devise`,
+`spec/controllers/devise_overrides`, `spec/controllers/api/v1/profiles_controller_spec.rb`)
+expect password sign-in to work, so run them with `-e SHEKEL_OIDC_CLIENT_ID=` when
+`.env.shekel-oidc` sets a client id; otherwise the password guard refuses them.
 
 ## Building the images from a worktree
 

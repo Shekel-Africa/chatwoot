@@ -30,6 +30,25 @@ RSpec.describe Shekel::OidcSettings do
     end
   end
 
+  describe '.password_login_disabled?' do
+    it 'follows enabled?' do
+      with_modified_env(SHEKEL_OIDC_CLIENT_ID: nil) { expect(described_class.password_login_disabled?).to be(false) }
+      with_modified_env(SHEKEL_OIDC_CLIENT_ID: 'chatwoot-test-client') { expect(described_class.password_login_disabled?).to be(true) }
+    end
+  end
+
+  describe '.account_id' do
+    it 'reads SHEKEL_CHATWOOT_ACCOUNT_ID' do
+      with_modified_env(SHEKEL_CHATWOOT_ACCOUNT_ID: '7') { expect(described_class.account_id).to eq(7) }
+    end
+
+    it 'fails loudly when it is not set' do
+      with_modified_env(SHEKEL_CHATWOOT_ACCOUNT_ID: nil) do
+        expect { described_class.account_id }.to raise_error(KeyError, /SHEKEL_CHATWOOT_ACCOUNT_ID/)
+      end
+    end
+  end
+
   describe '.strategy_options' do
     it 'requires explicit endpoints when discovery is off' do
       with_modified_env(**base_env) do
@@ -50,6 +69,7 @@ RSpec.describe Shekel::OidcSettings do
 
         expect(options).to include(issuer: 'https://auth.example.test/oauth/admin', discovery: false, pkce: true, send_nonce: true,
                                    client_signing_alg: :RS256, client_auth_method: :basic)
+        expect(options[:scope]).to eq(%i[openid email profile tenants customer_comms.access customer_comms.admin])
         expect(options[:client_options]).to include(
           host: 'auth.example.test',
           scheme: 'https',

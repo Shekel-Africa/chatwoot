@@ -128,3 +128,17 @@ describe('Shopify signup and password recovery', () => {
     });
   });
 });
+
+describe('Shekel password login', () => {
+  it('hides the password form when Shekel sign-in disables it', () => {
+    window.chatwootConfig = { shekelPasswordLoginDisabled: 'true' };
+
+    expect(Login.computed.showPasswordLogin.call({})).toBe(false);
+  });
+
+  it('shows the password form otherwise', () => {
+    window.chatwootConfig = { shekelPasswordLoginDisabled: 'false' };
+
+    expect(Login.computed.showPasswordLogin.call({})).toBe(true);
+  });
+});

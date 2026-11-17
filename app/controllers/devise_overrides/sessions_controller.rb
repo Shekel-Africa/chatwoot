@@ -2,6 +2,7 @@ class DeviseOverrides::SessionsController < DeviseTokenAuth::SessionsController
   include MfaAuthenticationHelper
   include DeviceVerificationGuard
   include ImpersonationLogging
+  include ShekelPasswordLoginGuard
 
   # Prevent session parameter from being passed
   # Unpermitted parameter: session
@@ -11,6 +12,7 @@ class DeviseOverrides::SessionsController < DeviseTokenAuth::SessionsController
   # same credentials a header-only request would authenticate with.
   before_action :merge_credential_headers, only: [:create]
   before_action :process_sso_auth_token, only: [:create]
+  before_action :refuse_shekel_password_sign_in, only: [:create]
 
   def new
     redirect_to login_page_url(error: 'access-denied')

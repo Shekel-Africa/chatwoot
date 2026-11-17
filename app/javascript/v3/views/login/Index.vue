@@ -116,6 +116,9 @@ export default {
     showShekelOidc() {
       return window.chatwootConfig.shekelOidcEnabled === 'true';
     },
+    showPasswordLogin() {
+      return window.chatwootConfig.shekelPasswordLoginDisabled !== 'true';
+    },
     showSignupLink() {
       return (
         window.chatwootConfig.signupEnabled === 'true' ||
@@ -492,12 +495,19 @@ export default {
             </router-link>
           </div>
           <SimpleDivider
-            v-if="showShekelOidc || showGoogleOAuth || showSamlLogin"
+            v-if="
+              showPasswordLogin &&
+              (showShekelOidc || showGoogleOAuth || showSamlLogin)
+            "
             :label="$t('COMMON.OR')"
             class="uppercase"
           />
         </div>
-        <form class="space-y-5" @submit.prevent="submitFormLogin">
+        <form
+          v-if="showPasswordLogin"
+          class="space-y-5"
+          @submit.prevent="submitFormLogin"
+        >
           <FormInput
             v-model="credentials.email"
             name="email_address"

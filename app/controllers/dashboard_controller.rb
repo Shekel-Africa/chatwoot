@@ -89,6 +89,7 @@ class DashboardController < ActionController::Base
       AZURE_APP_ID: GlobalConfigService.load('AZURE_APP_ID', ''),
       GIT_SHA: GIT_HASH,
       ALLOWED_LOGIN_METHODS: allowed_login_methods,
+      SHEKEL_PASSWORD_LOGIN_DISABLED: Shekel::OidcSettings.password_login_disabled?,
       ACTIVE_PLATFORM_BANNERS: active_platform_banners,
       ACTIVE_FEATURE_ANNOUNCEMENTS: active_feature_announcements
     }

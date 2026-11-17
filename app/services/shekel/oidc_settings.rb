@@ -9,10 +9,23 @@
 # See docs/shekel/LOCAL_OIDC_LOGIN.md for the variables and the client to register.
 class Shekel::OidcSettings
   PROVIDER = 'shekel'.freeze
-  SCOPES = %i[openid email profile].freeze
+  # `tenants` adds the tenants claim; `customer_comms.access` is required to
+  # sign in at all and `customer_comms.admin` is granted to CRM admins only.
+  SCOPES = %i[openid email profile tenants customer_comms.access customer_comms.admin].freeze
+  ADMIN_SCOPE = 'customer_comms.admin'.freeze
 
   def self.enabled?
     ENV.fetch('SHEKEL_OIDC_CLIENT_ID', '').present?
+  end
+
+  # Staff sign in through Shekel only once Shekel sign-in is configured.
+  def self.password_login_disabled?
+    enabled?
+  end
+
+  # The one Chatwoot account that Shekel staff are provisioned into.
+  def self.account_id
+    Integer(ENV.fetch('SHEKEL_CHATWOOT_ACCOUNT_ID'))
   end
 
   def self.discovery?

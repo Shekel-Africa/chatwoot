@@ -1,0 +1,102 @@
+require 'rails_helper'
+
+# Shekel fork: with Shekel OIDC enabled, staff sign in through Shekel only, so
+# every password surface (sign-in, reset, profile change) is refused.
+RSpec.describe 'Shekel password login guard', type: :request do
+  let(:account) { create(:account) }
+  let!(:user) { create(:user, password: 'Password1!', account: account) }
+  let(:oidc_enabled) { { SHEKEL_OIDC_CLIENT_ID: 'chatwoot-test-client' } }
+  let(:refusal) { 'Sign in with Shekel instead.' }
+
+  def expect_refused(status)
+    expect(response).to have_http_status(status)
+    expect(response.parsed_body['errors']).to eq([refusal])
+  end
+
+  it 'password_sign_in_returns_401_when_shekel_oidc_is_enabled' do
+    with_modified_env(**oidc_enabled) do
+      post new_user_session_url, params: { email: user.email, password: 'Password1!' }, as: :json
+
+      expect_refused(:unauthorized)
+      expect(response.headers['access-token']).to be_blank
+    end
+  end
+
+  it 'refuses password sign-in sent as headers too' do
+    with_modified_env(**oidc_enabled) do
+      post new_user_session_url, headers: { email: user.email, password: 'Password1!' }, as: :json
+
+      expect_refused(:unauthorized)
+    end
+  end
+
+  it 'refuses a sign-in with an sso_auth_token that is not valid' do
+    with_modified_env(**oidc_enabled) do
+      post new_user_session_url, params: { email: user.email, password: 'Password1!', sso_auth_token: SecureRandom.hex(32) }, as: :json
+
+      expect_refused(:unauthorized)
+    end
+  end
+
+  it 'sso_auth_token_sign_in_still_works' do
+    with_modified_env(**oidc_enabled) do
+      post new_user_session_url, params: { email: user.email, sso_auth_token: user.generate_sso_auth_token }, as: :json
+
+      expect(response).to have_http_status(:success)
+      expect(response.parsed_body.dig('data', 'email')).to eq(user.email)
+    end
+  end
+
+  it 'password_reset_request_and_update_are_refused' do
+    with_modified_env(**oidc_enabled) do
+      expect do
+        post user_password_path, params: { email: user.email }, as: :json
+      end.not_to(change { user.reload.reset_password_token })
+      expect_refused(:forbidden)
+
+      token = user.send(:set_reset_password_token)
+      put user_password_path, params: { reset_password_token: token, password: 'Changed1!x', password_confirmation: 'Changed1!x' }, as: :json
+      expect_refused(:forbidden)
+      expect(user.reload.valid_password?('Password1!')).to be(true)
+    end
+  end
+
+  it 'profile_password_change_is_refused' do
+    with_modified_env(**oidc_enabled) do
+      put '/api/v1/profile',
+          params: { profile: { current_password: 'Password1!', password: 'Changed1!x', password_confirmation: 'Changed1!x' } },
+          headers: user.create_new_auth_token,
+          as: :json
+
+      expect_refused(:forbidden)
+      expect(user.reload.valid_password?('Password1!')).to be(true)
+    end
+  end
+
+  it 'still lets a profile be updated without a password' do
+    with_modified_env(**oidc_enabled) do
+      put '/api/v1/profile', params: { profile: { name: 'Renamed' } }, headers: user.create_new_auth_token, as: :json
+
+      expect(response).to have_http_status(:success)
+      expect(user.reload.name).to eq('Renamed')
+    end
+  end
+
+  it 'api_access_token_requests_are_unaffected' do
+    with_modified_env(**oidc_enabled) do
+      get '/api/v1/profile', headers: { api_access_token: user.access_token.token }, as: :json
+
+      expect(response).to have_http_status(:success)
+      expect(response.parsed_body['email']).to eq(user.email)
+    end
+  end
+
+  it 'password_sign_in_still_works_when_shekel_oidc_is_disabled' do
+    with_modified_env(SHEKEL_OIDC_CLIENT_ID: nil) do
+      post new_user_session_url, params: { email: user.email, password: 'Password1!' }, as: :json
+
+      expect(response).to have_http_status(:success)
+      expect(response.headers['access-token']).to be_present
+    end
+  end
+end
