@@ -1,0 +1,169 @@
+# Shekel fork: build, check and propose a staging deploy (S20-4856; ADR 0042 in Shekel-Africa/Ops).
+#
+# On a push to shekel/main:
+#   1. checks   the scripts' offline cases, then the Shekel specs on Postgres (pgvector) + Redis
+#   2. image    docker/Dockerfile -> assert community edition -> push 213080125158.dkr.ecr.us-east-1.amazonaws.com/
+#               chatwoot:<full sha> with GitHubActionsChatwootImagePush (OIDC; trusted for shekel/main only)
+#   3. propose  open the Shekel-Africa/Ops PR that sets chatwoot_image_tag to <sha>. Merging it deploys staging from
+#               Ops (chatwoot-staging-deploy); this repository never reaches the host.
+# workflow_dispatch: dry_run (default true) builds and asserts, pushes nothing and opens nothing; it prints the planned
+# Ops change. Logic: .github/scripts/shekel-*.sh, offline cases in .github/scripts/shekel-*.check.sh.
+name: shekel-build-deploy
+
+on:
+  push:
+    branches: [shekel/main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and assert only; push nothing, open no Ops PR'
+        type: boolean
+        default: true
+  pull_request:
+    branches: [shekel/main]
+    paths:
+      - '.github/workflows/shekel-build-deploy.yml'
+      - '.github/scripts/shekel-*'
+
+# One release at a time, in order: a newer push queues behind a running one instead of cancelling it.
+concurrency:
+  group: shekel-build-deploy-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || 'release' }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  # Live only on a push to shekel/main, or a dispatch on shekel/main with dry_run=false (a null input stays dry).
+  DRY_RUN: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false')) && github.ref == 'refs/heads/shekel/main' && 'false' || 'true' }}
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 213080125158.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: chatwoot
+  IMAGE_PUSH_ROLE: arn:aws:iam::213080125158:role/GitHubActionsChatwootImagePush
+  OPS_REPO: Shekel-Africa/Ops
+
+jobs:
+  script-checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Offline cases (stubbed docker/aws/gh/bundle)
+        run: |
+          for c in .github/scripts/shekel-*.check.sh; do echo "== $c"; bash "$c"; done
+      - name: shellcheck
+        run: shellcheck .github/scripts/shekel-*.sh
+
+  specs:
+    if: github.event_name != 'pull_request'
+    needs: script-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ''
+          POSTGRES_DB: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --mount type=tmpfs,destination=/var/lib/postgresql/data
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:alpine
+        ports:
+          - 6379:6379
+        options: --entrypoint redis-server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: ruby/setup-ruby@20eb24b0d509e2b9ed9b6d42ddfeb992915e0564 # v1.341.0
+        with:
+          bundler-cache: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: 'pnpm'
+      - name: Install pnpm dependencies
+        run: pnpm i
+      - name: Strip enterprise code (as the image does)
+        run: rm -rf enterprise spec/enterprise
+      - name: Database
+        run: |
+          bundle exec rake db:create
+          bundle exec rake db:schema:load
+      - name: Shekel specs
+        run: bash .github/scripts/shekel-specs.sh
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider
+
+  image:
+    if: github.event_name != 'pull_request'
+    needs: specs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write # used only when DRY_RUN=false (the role trusts shekel/main only)
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build (docker/Dockerfile)
+        run: bash .github/scripts/shekel-image.sh build "$GITHUB_SHA"
+      - name: Assert community edition
+        run: bash .github/scripts/shekel-image.sh assert "$GITHUB_SHA"
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.DRY_RUN == 'false'
+        with:
+          role-to-assume: ${{ env.IMAGE_PUSH_ROLE }}
+          role-session-name: chatwoot-image-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Push to ECR (skipped in a dry run)
+        id: push
+        run: bash .github/scripts/shekel-image.sh push "$GITHUB_SHA"
+
+  propose:
+    # The environment admits shekel/main only; a dry run dispatched from another branch stops after the image job.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/shekel/main'
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Holds the GitHub App that may open PRs on Shekel-Africa/Ops only. Deployment branches: shekel/main.
+    environment: ops-release
+    permissions: {}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        id: app
+        with:
+          client-id: ${{ vars.OPS_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.OPS_RELEASE_APP_PRIVATE_KEY }}
+          owner: Shekel-Africa
+          repositories: Ops
+          # A dry run only reads Ops: ask for read-only scopes then.
+          permission-contents: ${{ env.DRY_RUN == 'false' && 'write' || 'read' }}
+          permission-pull-requests: ${{ env.DRY_RUN == 'false' && 'write' || 'read' }}
+      - name: Open the Ops PR (dry run prints the planned change only)
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: bash .github/scripts/shekel-ops-bump.sh "$GITHUB_SHA" "$DIGEST"
