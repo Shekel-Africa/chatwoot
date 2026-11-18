@@ -2,6 +2,7 @@ class Api::V1::Accounts::BaseController < Api::BaseController
   include SwitchLocale
   include EnsureCurrentAccountHelper
   include MfaEnforcementGuard
+  include ShekelAuditTrail # Shekel fork: audit log
   before_action :current_account
   before_action :validate_token_api_access, if: :authenticate_by_access_token?
   before_action :check_account_mfa_enforcement, if: :authenticate_by_access_token?

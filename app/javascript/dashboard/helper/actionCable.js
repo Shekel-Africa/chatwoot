@@ -15,6 +15,8 @@ import { VOICE_CALL_PROVIDERS } from 'dashboard/helper/inbox';
 import { markCallDismissed, isLocalCall } from 'dashboard/helper/voice';
 import { VOICE_CALL_DIRECTION } from 'dashboard/components-next/message/constants';
 import { FEATURE_FLAGS } from 'dashboard/featureFlags';
+// Shekel fork: for onShekelConversationHidden.
+import types from 'dashboard/store/mutation-types';
 
 const { isImpersonating } = useImpersonation();
 const UNREAD_COUNTS_REFETCH_THROTTLE_MS = 5000;
@@ -60,6 +62,8 @@ class ActionCableConnector extends BaseActionCableConnector {
       'notification.updated': this.onNotificationUpdated,
       'conversation.read': this.onConversationRead,
       'conversation.updated': this.onConversationUpdated,
+      // Shekel fork: sent when a team or assignee change hides a conversation from this agent.
+      'shekel.conversation.hidden': this.onShekelConversationHidden,
       'conversation.unread_count_changed':
         this.onConversationUnreadCountChanged,
       'account.cache_invalidated': this.onCacheInvalidate,
@@ -219,6 +223,12 @@ class ActionCableConnector extends BaseActionCableConnector {
 
   onConversationUpdated = data => {
     this.app.$store.dispatch('updateConversation', data);
+    this.fetchConversationStats();
+  };
+
+  // Shekel fork: drop a conversation this agent can no longer see.
+  onShekelConversationHidden = ({ id } = {}) => {
+    if (id) this.app.$store.commit(types.DELETE_CONVERSATION, id);
     this.fetchConversationStats();
   };
 

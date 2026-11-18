@@ -40,7 +40,11 @@ class Contacts::BulkActionService
   end
 
   def ids
-    Array(@params[:ids]).compact
+    ids = Array(@params[:ids]).compact
+    # Shekel fork: an agent acts only on contacts they can see.
+    return ids unless Shekel::ConversationVisibility.restricted?(user: @user, account: @account)
+
+    Shekel::ContactVisibility.scope(user: @user, account: @account, relation: @account.contacts.where(id: ids)).pluck(:id)
   end
 
   def labels_to_add

@@ -3,6 +3,7 @@ class Api::V1::Accounts::Conversations::MessagesController < Api::V1::Accounts::
 
   def index
     @messages = message_finder.perform
+    shekel_audit_view(@conversation) # Shekel fork: audit log (conversation.viewed)
   end
 
   def create

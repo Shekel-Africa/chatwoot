@@ -2,6 +2,7 @@ class DeviseOverrides::SessionsController < DeviseTokenAuth::SessionsController
   include MfaAuthenticationHelper
   include DeviceVerificationGuard
   include ImpersonationLogging
+  include ShekelPasswordLoginGuard # Shekel fork: Shekel-only sign-in in staff mode
 
   # Prevent session parameter from being passed
   # Unpermitted parameter: session
@@ -11,6 +12,7 @@ class DeviseOverrides::SessionsController < DeviseTokenAuth::SessionsController
   # same credentials a header-only request would authenticate with.
   before_action :merge_credential_headers, only: [:create]
   before_action :process_sso_auth_token, only: [:create]
+  before_action :refuse_shekel_password_sign_in, only: [:create] # Shekel fork: ShekelPasswordLoginGuard
 
   def new
     redirect_to login_page_url(error: 'access-denied')
@@ -24,6 +26,11 @@ class DeviseOverrides::SessionsController < DeviseTokenAuth::SessionsController
 
     # Only proceed with standard authentication if no MFA is required
     super
+  end
+
+  # Shekel fork: audit log. DTA yields the user only once the token is revoked.
+  def destroy
+    super { |user| Shekel::Audit.record_sign_out(user: user, ip: request.remote_ip) }
   end
 
   def render_create_success

@@ -8,6 +8,13 @@ DeviseTokenAuth.setup do |config|
   # By default, users will need to re-authenticate after 2 weeks. This setting
   # determines how long tokens will remain valid after they are issued.
   config.token_lifespan = 2.months
+  # Shekel fork: in staff mode (Shekel::OidcSettings.staff_mode?) staff sessions
+  # last SHEKEL_SESSION_LIFESPAN_HOURS (default 12) so a staff member removed in
+  # Shekel loses access within a day. Applied after initialization, once app/ is
+  # autoloadable, so it asks the same helper as every other staff-mode check.
+  Rails.application.config.after_initialize do
+    DeviseTokenAuth.token_lifespan = Shekel::OidcSettings.token_lifespan(DeviseTokenAuth.token_lifespan)
+  end
 
   # By default, old tokens are not invalidated when password is changed.
   # Enable this option if you want to make passwords updates to logout other devices.

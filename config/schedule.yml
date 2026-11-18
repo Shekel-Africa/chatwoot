@@ -92,3 +92,10 @@ remove_orphan_conversations_job:
   cron: '0 */12 * * *'
   class: 'Internal::RemoveOrphanConversationsJob'
   queue: housekeeping
+
+# Shekel fork: executed daily at 0230 UTC
+# deletes conversations past their retention period (Shekel::Retention)
+shekel_retention_job:
+  cron: '30 2 * * *'
+  class: 'Shekel::RetentionJob'
+  queue: low

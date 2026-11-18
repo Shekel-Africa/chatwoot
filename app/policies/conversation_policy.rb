@@ -14,7 +14,8 @@ class ConversationPolicy < ApplicationPolicy
   private
 
   def agent_can_view_conversation?
-    inbox_access? || team_access?
+    # Shekel fork: an agent sees only their teams' conversations.
+    (inbox_access? || team_access?) && Shekel::ConversationVisibility.visible?(user: user, conversation: record)
   end
 
   def administrator?

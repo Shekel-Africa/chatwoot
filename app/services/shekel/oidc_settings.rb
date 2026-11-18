@@ -6,13 +6,101 @@
 # SHEKEL_OIDC_CLIENT_ID is set. Required settings are read with ENV.fetch so a
 # half-configured provider fails loudly instead of redirecting somewhere wrong.
 #
+# Staff mode (SHEKEL_CHATWOOT_ACCOUNT_ID set) is what turns the restrictions on:
+# team-scoped visibility, no password or other SSO sign-in, no personal API
+# tokens and the short session. It keys on the account id rather than the OIDC
+# client id so that losing the OIDC settings fails closed (nobody signs in)
+# instead of open (everyone sees everything); production refuses to boot in
+# that state (config/initializers/shekel_staff_mode.rb).
+#
 # See docs/shekel/LOCAL_OIDC_LOGIN.md for the variables and the client to register.
 class Shekel::OidcSettings
   PROVIDER = 'shekel'.freeze
-  SCOPES = %i[openid email profile].freeze
+  # `tenants` adds the tenants claim; `customer_comms.access` is required to
+  # sign in at all and `customer_comms.admin` is granted to CRM admins only.
+  SCOPES = %i[openid email profile tenants customer_comms.access customer_comms.admin].freeze
+  ACCESS_SCOPE = 'customer_comms.access'.freeze
+  ADMIN_SCOPE = 'customer_comms.admin'.freeze
 
   def self.enabled?
     ENV.fetch('SHEKEL_OIDC_CLIENT_ID', '').present?
+  end
+
+  # The Shekel deployment: staff are provisioned into SHEKEL_CHATWOOT_ACCOUNT_ID
+  # and every Shekel restriction applies. Unset in development and upstream specs.
+  def self.staff_mode?
+    ENV.fetch('SHEKEL_CHATWOOT_ACCOUNT_ID', '').strip.present?
+  end
+
+  # In staff mode, staff sign in through Shekel only.
+  def self.password_login_disabled?
+    staff_mode?
+  end
+
+  # devise_token_auth session lifespan (config/initializers/devise_token_auth.rb):
+  # SHEKEL_SESSION_LIFESPAN_HOURS (default 12) in staff mode, upstream's otherwise.
+  def self.token_lifespan(upstream)
+    return upstream unless staff_mode?
+
+    Integer(ENV.fetch('SHEKEL_SESSION_LIFESPAN_HOURS', '12')).hours
+  end
+
+  # Raised at boot in production (config/initializers/shekel_staff_mode.rb):
+  # staff mode with no Shekel sign-in would leave nobody able to sign in.
+  def self.verify_configuration!(env: Rails.env)
+    return unless env.production? && staff_mode? && !enabled?
+
+    raise 'Shekel staff mode is on (SHEKEL_CHATWOOT_ACCOUNT_ID is set) but SHEKEL_OIDC_CLIENT_ID is blank: ' \
+          'set the SHEKEL_OIDC_* variables (docs/shekel/LOCAL_OIDC_LOGIN.md) or unset SHEKEL_CHATWOOT_ACCOUNT_ID'
+  end
+
+  # Hostname Meta delivers webhooks to (SHEKEL_PUBLIC_HOST), or nil. Together
+  # with staff_hosts it switches Shekel::PublicHostGuard on; nil and no staff
+  # hosts leaves the guard off, for local development.
+  def self.public_host
+    configured_host(ENV.fetch('SHEKEL_PUBLIC_HOST', ''), 'SHEKEL_PUBLIC_HOST')
+  end
+
+  # Hostnames staff reach the dashboard, API, sign-in and /cable on
+  # (SHEKEL_STAFF_HOSTS, comma-separated). Every other Host gets only the
+  # channel webhooks (Shekel::PublicHostGuard).
+  def self.staff_hosts
+    ENV.fetch('SHEKEL_STAFF_HOSTS', '').split(',').filter_map { |raw| configured_host(raw, 'SHEKEL_STAFF_HOSTS') }
+  end
+
+  # Case-insensitive, port and trailing dots ignored. Shared with the guard so
+  # a configured host and a request Host compare the same way.
+  def self.normalize_host(host)
+    host.to_s.strip.downcase.sub(/:\d+\z/, '').sub(/\.+\z/, '')
+  end
+
+  HOSTNAME = /\A[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\z/
+  private_constant :HOSTNAME
+
+  # A bare hostname from a configured value; a scheme, path or port is
+  # stripped with a warning.
+  def self.configured_host(raw, variable)
+    raw = raw.strip
+    return nil if raw.empty?
+
+    host = normalize_host(raw.downcase.sub(%r{\A[a-z][a-z0-9+.-]*://}, '').sub(%r{[/?#].*\z}, ''))
+    warn_host(variable, host) if host != raw.downcase || !host.match?(HOSTNAME)
+    host.presence
+  end
+  private_class_method :configured_host
+
+  # Logs once per variable and process: the hosts are read on every request.
+  def self.warn_host(variable, host)
+    @warned_hosts ||= Set.new
+    return unless @warned_hosts.add?(variable)
+
+    Rails.logger.warn("[shekel] #{variable} should list bare hostnames; using #{host.inspect} after normalising")
+  end
+  private_class_method :warn_host
+
+  # The one Chatwoot account that Shekel staff are provisioned into.
+  def self.account_id
+    Integer(ENV.fetch('SHEKEL_CHATWOOT_ACCOUNT_ID'))
   end
 
   def self.discovery?

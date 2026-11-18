@@ -128,3 +128,44 @@ describe('Shopify signup and password recovery', () => {
     });
   });
 });
+
+// Shekel fork: Shekel is the only sign-in in staff mode.
+describe('Shekel staff mode', () => {
+  const allowedLoginMethods = ['email', 'google_oauth', 'saml'];
+
+  const loginMethods = () => {
+    const context = { allowedLoginMethods };
+    context.shekelStaffMode = Login.computed.shekelStaffMode.call(context);
+    return {
+      password: Login.computed.showPasswordLogin.call(context),
+      google: Login.computed.showGoogleOAuth.call(context),
+      saml: Login.computed.showSamlLogin.call(context),
+    };
+  };
+
+  it('hides the password form, Google and SAML in staff mode', () => {
+    window.chatwootConfig = {
+      shekelStaffMode: 'true',
+      googleOAuthClientId: 'google-client',
+    };
+
+    expect(loginMethods()).toEqual({
+      password: false,
+      google: false,
+      saml: false,
+    });
+  });
+
+  it('shows them otherwise', () => {
+    window.chatwootConfig = {
+      shekelStaffMode: 'false',
+      googleOAuthClientId: 'google-client',
+    };
+
+    expect(loginMethods()).toEqual({
+      password: true,
+      google: true,
+      saml: true,
+    });
+  });
+});

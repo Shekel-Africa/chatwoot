@@ -107,14 +107,25 @@ export default {
     allowedLoginMethods() {
       return window.chatwootConfig.allowedLoginMethods || ['email'];
     },
+    // Shekel fork: in staff mode Shekel is the only sign-in, so the password
+    // form, Google and SAML are hidden (the server refuses them too).
+    shekelStaffMode() {
+      return window.chatwootConfig.shekelStaffMode === 'true';
+    },
     showGoogleOAuth() {
       return (
+        !this.shekelStaffMode &&
         this.allowedLoginMethods.includes('google_oauth') &&
         Boolean(window.chatwootConfig.googleOAuthClientId)
       );
     },
+    // Shekel fork: the Shekel sign-in button.
     showShekelOidc() {
       return window.chatwootConfig.shekelOidcEnabled === 'true';
+    },
+    // Shekel fork: see shekelStaffMode.
+    showPasswordLogin() {
+      return !this.shekelStaffMode;
     },
     showSignupLink() {
       return (
@@ -140,7 +151,8 @@ export default {
         : route;
     },
     showSamlLogin() {
-      return this.allowedLoginMethods.includes('saml');
+      // Shekel fork: see shekelStaffMode.
+      return !this.shekelStaffMode && this.allowedLoginMethods.includes('saml');
     },
     samlLoginRoute() {
       const route = { name: 'sso_login' };
@@ -471,6 +483,7 @@ export default {
     >
       <div v-if="!email">
         <div class="flex flex-col gap-4">
+          <!-- Shekel fork: Shekel sign-in button -->
           <ShekelOidcButton v-if="showShekelOidc" />
           <GoogleOAuthButton
             v-if="showGoogleOAuth"
@@ -491,13 +504,22 @@ export default {
               </span>
             </router-link>
           </div>
+          <!-- Shekel fork: no divider when the password form is hidden -->
           <SimpleDivider
-            v-if="showShekelOidc || showGoogleOAuth || showSamlLogin"
+            v-if="
+              showPasswordLogin &&
+              (showShekelOidc || showGoogleOAuth || showSamlLogin)
+            "
             :label="$t('COMMON.OR')"
             class="uppercase"
           />
         </div>
-        <form class="space-y-5" @submit.prevent="submitFormLogin">
+        <!-- Shekel fork: v-if="showPasswordLogin" -->
+        <form
+          v-if="showPasswordLogin"
+          class="space-y-5"
+          @submit.prevent="submitFormLogin"
+        >
           <FormInput
             v-model="credentials.email"
             name="email_address"

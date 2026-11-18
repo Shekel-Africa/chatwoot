@@ -30,7 +30,9 @@ class Contacts::FilterService < FilterService
   end
 
   def base_relation
-    @account.contacts.resolved_contacts(use_crm_v2: @account.feature_enabled?('crm_v2'))
+    contacts = @account.contacts.resolved_contacts(use_crm_v2: @account.feature_enabled?('crm_v2'))
+    # Shekel fork: an agent sees only the contacts of their teams' conversations.
+    Shekel::ContactVisibility.scope(user: @user, account: @account, relation: contacts)
   end
 
   def filter_config

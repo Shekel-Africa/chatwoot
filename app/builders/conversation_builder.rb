@@ -2,6 +2,9 @@ class ConversationBuilder
   pattr_initialize [:params!, :contact_inbox!]
 
   def perform
+    # Shekel fork: an agent cannot reach a contact they cannot see (e.g. by its source id).
+    raise ActiveRecord::RecordNotFound unless Shekel::ContactVisibility.visible?(user: Current.user, contact: @contact_inbox.contact)
+
     look_up_exising_conversation || create_new_conversation
   end
 
@@ -10,11 +13,15 @@ class ConversationBuilder
   def look_up_exising_conversation
     return unless @contact_inbox.inbox.lock_to_single_conversation?
 
-    @contact_inbox.conversations.last
+    # Shekel fork: only a conversation the agent can see is reused; otherwise a new one is started.
+    Shekel::ConversationVisibility.scope(user: Current.user, account: @contact_inbox.inbox.account, relation: @contact_inbox.conversations).last
   end
 
   def create_new_conversation
-    ::Conversation.create!(conversation_params)
+    attributes = conversation_params
+    # Shekel fork: a conversation an agent starts stays visible to them (no-op unless Current.user is a staff agent).
+    attributes.merge!(Shekel::ConversationVisibility.creation_defaults(user: Current.user, attributes: attributes))
+    ::Conversation.create!(attributes)
   end
 
   def conversation_params

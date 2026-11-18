@@ -1,11 +1,13 @@
 class DeviseOverrides::OmniauthCallbacksController < DeviseTokenAuth::OmniauthCallbacksController
   include EmailHelper
-  include ShekelOidcSignIn
+  include ShekelOidcSignIn # Shekel fork: staff sign-in through authentication-api's admin realm
 
   SHOPIFY_INSTALL_REDIRECT_PATTERN = %r{\Asettings/integrations/shopify\?shopify_pending_install=([0-9a-f]{32})\z}
 
   def omniauth_success
+    # Shekel fork: staff sign-in through Shekel (ShekelOidcSignIn); in staff mode no other provider.
     return sign_in_shekel_staff if shekel_oidc_callback?
+    return redirect_to login_page_url(error: 'no-account-found') if shekel_other_provider_refused?
 
     get_resource_from_auth_hash
 

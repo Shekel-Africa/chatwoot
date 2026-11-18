@@ -24,6 +24,7 @@ class Api::V1::Accounts::Actions::ContactMergesController < Api::V1::Accounts::B
   end
 
   def contacts
-    @contacts ||= Current.account.contacts
+    # Shekel fork: an agent merges only contacts they can see.
+    @contacts ||= Shekel::ContactVisibility.contacts(user: Current.user, account: Current.account)
   end
 end

@@ -14,6 +14,9 @@ class Conversations::UnreadCounts::Counter
   end
 
   def perform
+    # Shekel fork: an agent's counts come from the conversations they can see.
+    shekel_counts = Shekel::UnreadCounts.for(account: account, user: user)
+    return with_filtered_counts(shekel_counts) if shekel_counts
     return with_filtered_counts(empty_counts, build: false) if permission_mode == :none
 
     ensure_base_cache!

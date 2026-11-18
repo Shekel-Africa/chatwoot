@@ -14,19 +14,33 @@ RSpec.describe 'Shekel OIDC staff sign-in', type: :request do
       SHEKEL_OIDC_TOKEN_URL: 'https://auth.example.test/oauth/admin/token',
       SHEKEL_OIDC_USERINFO_URL: 'https://auth.example.test/oauth/admin/userinfo',
       SHEKEL_OIDC_JWKS_URL: 'https://auth.example.test/oauth/jwks',
-      SHEKEL_OIDC_DISCOVERY: nil
+      SHEKEL_OIDC_DISCOVERY: nil,
+      SHEKEL_CHATWOOT_ACCOUNT_ID: account.id.to_s
     }
   end
+  let(:account) { create(:account) }
+  let(:tenant_id) { '6f1c2a9e-3b7d-4e8f-9a0b-1c2d3e4f5a6b' }
+  let(:access_scope) { 'openid email profile tenants customer_comms.access' }
+  let(:admin_scope) { "#{access_scope} customer_comms.admin" }
 
-  def mock_shekel_auth(email:, realm: 'admin')
-    raw_info = { sub: '42', email: email, name: 'Ada Admin', realm: realm }.compact
+  def tenant_claim(id)
+    { id: id, slug: 'acme-motors', country: 'ng' }
+  end
+
+  def mock_shekel_auth(email:, realm: 'admin', tenants: [], scope: nil, sub: '42')
+    raw_info = { sub: sub, email: email, name: 'Ada Admin', realm: realm, tenants: tenants }.compact
     OmniAuth.config.test_mode = true
     OmniAuth.config.mock_auth[:shekel] = OmniAuth::AuthHash.new(
       provider: 'shekel',
-      uid: '42',
+      uid: sub,
       info: { name: 'Ada Admin', email: email },
+      credentials: { token: 'access-token', scope: scope || access_scope },
       extra: { raw_info: raw_info }
     )
+  end
+
+  def redirect_query
+    Rack::Utils.parse_query(URI.parse(response.location).query)
   end
 
   def expect_refused_at_first_hop
@@ -73,13 +87,189 @@ RSpec.describe 'Shekel OIDC staff sign-in', type: :request do
       end
     end
 
-    it 'refuses an email that has no agent and creates nothing' do
+    it 'an_unknown_email_is_provisioned_now' do
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'stranger@shekel.test')
+
+        expect { complete_callback }.to change(User, :count).by(1)
+
+        user = User.from_email('stranger@shekel.test')
+        expect(account.account_users.find_by!(user: user).role).to eq('agent')
+        expect(CGI.unescape(redirect_query['email'])).to eq(user.email) # upstream double-encodes
+        expect(redirect_query['sso_auth_token']).to be_present
+        expect(redirect_query).not_to have_key('error')
+      end
+    end
+
+    it 'does not create an account of its own for a provisioned user' do
       with_modified_env(**shekel_env, ENABLE_ACCOUNT_SIGNUP: 'true') do
         mock_shekel_auth(email: 'stranger@shekel.test')
 
+        expect { complete_callback }.not_to change(Account, :count)
+      end
+    end
+
+    it 'the_sync_runs_before_the_sso_redirect' do
+      team = create(:team, account: account)
+      Shekel::TenantTeam.create!(account: account, tenant_id: tenant_id, team: team)
+
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'agent@shekel.test', tenants: [tenant_claim(tenant_id.upcase)], scope: admin_scope)
+
+        complete_callback
+
+        expect(redirect_query['sso_auth_token']).to be_present
+        expect(team.members).to include(agent)
+        expect(account.account_users.find_by!(user: agent).role).to eq('administrator')
+      end
+    end
+
+    it 'records staff.signed_in in the audit log' do
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'agent@shekel.test')
+
+        complete_callback
+
+        expect(Shekel::AuditEvent.where(action: 'staff.signed_in').sole).to have_attributes(
+          account_id: account.id, actor_type: 'User', actor_id: agent.id, subject_type: 'User', subject_id: agent.id,
+          metadata: { 'provider' => 'shekel' }
+        )
+      end
+    end
+
+    it 'does not record a refused sign-in' do
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'agent@shekel.test', realm: 'user')
+
+        expect_refused_at_first_hop
+
+        expect(Shekel::AuditEvent.count).to eq(0)
+      end
+    end
+
+    it 'syncs an agent without the CRM admin scope as an agent' do
+      create(:account_user, account: account, user: agent, role: :administrator)
+
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'agent@shekel.test', scope: access_scope)
+
+        complete_callback
+
+        expect(account.account_users.find_by!(user: agent).role).to eq('agent')
+      end
+    end
+
+    it 'missing_tenants_claim_leaves_teams_unchanged' do
+      team = create(:team, account: account)
+      Shekel::TenantTeam.create!(account: account, tenant_id: tenant_id, team: team)
+      team.add_members([agent.id])
+      allow(Rails.logger).to receive(:warn)
+
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'agent@shekel.test', tenants: nil, scope: admin_scope)
+
+        complete_callback
+
+        expect(redirect_query['sso_auth_token']).to be_present
+        expect(team.reload.members).to include(agent)
+        expect(account.account_users.find_by!(user: agent).role).to eq('administrator')
+        expect(Rails.logger).to have_received(:warn).with(/tenants claim/)
+      end
+    end
+
+    it 'an_explicit_empty_tenants_claim_leaves_mapped_teams' do
+      team = create(:team, account: account)
+      Shekel::TenantTeam.create!(account: account, tenant_id: tenant_id, team: team)
+      team.add_members([agent.id])
+
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'agent@shekel.test', tenants: [])
+
+        complete_callback
+
+        expect(team.reload.members).not_to include(agent)
+      end
+    end
+
+    it 'keeps the same Chatwoot user when the email changes at the IdP' do
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'agent@shekel.test', sub: 'staff-7')
+        complete_callback # adopts the existing agent and links the IdP subject
+        expect(agent.reload.custom_attributes['shekel_sub']).to eq('staff-7')
+
+        mock_shekel_auth(email: 'agent.renamed@shekel.test', sub: 'staff-7')
         expect { complete_callback }.not_to change(User, :count)
 
+        expect(agent.reload.email).to eq('agent.renamed@shekel.test')
+        expect(CGI.unescape(redirect_query['email'])).to eq('agent.renamed@shekel.test')
+      end
+    end
+
+    it 'keeps only the mapped tenants in the cookie session, so an all-tenants admin fits' do
+      team = create(:team, account: account)
+      Shekel::TenantTeam.create!(account: account, tenant_id: tenant_id, team: team)
+      every_tenant = Array.new(400) { tenant_claim(SecureRandom.uuid) } << tenant_claim(tenant_id)
+
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'agent@shekel.test', tenants: every_tenant, scope: admin_scope)
+        get '/omniauth/shekel/callback'
+
+        expect(session[ShekelOidcSignIn::REALM_VERIFIED_KEY]).to include('tenants_claim' => true, 'tenants' => [tenant_id])
+        follow_redirect!
+        expect(redirect_query['sso_auth_token']).to be_present
+        expect(team.members).to include(agent)
+      end
+    end
+
+    it 'a_token_without_customer_comms_access_is_refused' do
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'stranger@shekel.test', scope: 'openid email profile tenants customer_comms.admin')
+
+        expect { expect_refused_at_first_hop }.not_to change(User, :count)
+      end
+    end
+
+    it 'a_blank_email_is_refused' do
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: '')
+
+        expect { expect_refused_at_first_hop }.not_to change(User, :count)
+      end
+    end
+
+    it 'a_missing_account_id_redirects_with_shekel_misconfigured' do
+      allow(Rails.logger).to receive(:error)
+
+      with_modified_env(**shekel_env, SHEKEL_CHATWOOT_ACCOUNT_ID: nil) do
+        mock_shekel_auth(email: 'stranger@shekel.test')
+
+        expect { get '/omniauth/shekel/callback' }.not_to change(User, :count)
+
+        expect(response).to redirect_to("#{frontend_url}/app/login?error=shekel-misconfigured")
+        expect(Rails.logger).to have_received(:error).with(/SHEKEL_CHATWOOT_ACCOUNT_ID/)
+      end
+    end
+
+    it 'an_account_id_that_names_no_account_redirects_with_shekel_misconfigured' do
+      allow(Rails.logger).to receive(:error)
+
+      with_modified_env(**shekel_env, SHEKEL_CHATWOOT_ACCOUNT_ID: (Account.maximum(:id).to_i + 1000).to_s) do
+        mock_shekel_auth(email: 'stranger@shekel.test')
+
+        get '/omniauth/shekel/callback'
+
+        expect(response).to redirect_to("#{frontend_url}/app/login?error=shekel-misconfigured")
+        # Nothing carried over: the second hop is still refused.
+        get '/auth/shekel/callback'
         expect(response).to redirect_to("#{frontend_url}/app/login?error=no-account-found")
+      end
+    end
+
+    it 'a_user_realm_token_with_tenants_is_still_refused' do
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'stranger@shekel.test', realm: 'user', tenants: [tenant_claim(tenant_id)], scope: admin_scope)
+
+        expect { expect_refused_at_first_hop }.not_to change(User, :count)
       end
     end
 
@@ -97,6 +287,44 @@ RSpec.describe 'Shekel OIDC staff sign-in', type: :request do
 
         expect_refused_at_first_hop
       end
+    end
+
+    it 'issues an SSO token marked as Shekel, which the password guard accepts' do
+      with_modified_env(**shekel_env) do
+        mock_shekel_auth(email: 'agent@shekel.test')
+        complete_callback
+
+        expect(Shekel::SsoTokens.shekel?(agent, redirect_query['sso_auth_token'])).to be(true)
+      end
+    end
+
+    it 'refuses every other provider in staff mode, at both hops' do
+      OmniAuth.config.mock_auth[:google_oauth2] = OmniAuth::AuthHash.new(
+        provider: 'google_oauth2', uid: '123', info: { name: 'Agent', email: 'agent@shekel.test' }
+      )
+
+      with_modified_env(**shekel_env) do
+        get '/omniauth/google_oauth2/callback'
+        expect(response).to redirect_to("#{frontend_url}/app/login?error=no-account-found")
+
+        get '/auth/google_oauth2/callback'
+        expect(response).to redirect_to("#{frontend_url}/app/login?error=no-account-found")
+      end
+    ensure
+      OmniAuth.config.mock_auth.delete(:google_oauth2)
+    end
+
+    it 'leaves other providers as upstream when staff mode is off' do
+      OmniAuth.config.mock_auth[:google_oauth2] = OmniAuth::AuthHash.new(
+        provider: 'google_oauth2', uid: '123', info: { name: 'Agent', email: 'agent@shekel.test' }
+      )
+
+      with_modified_env(**shekel_env, SHEKEL_CHATWOOT_ACCOUNT_ID: nil) do
+        get '/omniauth/google_oauth2/callback'
+        expect(response).to redirect_to("#{frontend_url}/auth/google_oauth2/callback")
+      end
+    ensure
+      OmniAuth.config.mock_auth.delete(:google_oauth2)
     end
 
     it 'refuses the second hop when the realm check was not passed in this session' do
@@ -132,7 +360,7 @@ RSpec.describe 'Shekel OIDC staff sign-in', type: :request do
           'client_id' => 'chatwoot-test-client',
           'redirect_uri' => "#{frontend_url}/omniauth/shekel/callback",
           'response_type' => 'code',
-          'scope' => 'openid email profile',
+          'scope' => 'openid email profile tenants customer_comms.access customer_comms.admin',
           'code_challenge_method' => 'S256'
         )
         expect(query['code_challenge']).to be_present
@@ -148,6 +376,83 @@ RSpec.describe 'Shekel OIDC staff sign-in', type: :request do
 
         expect(response).to have_http_status(:redirect)
         expect(response.location).not_to include('auth.example.test')
+      end
+    end
+  end
+
+  # No mock auth hash here: the real omniauth_openid_connect strategy runs the
+  # code exchange against stubbed provider endpoints, to pin down where the
+  # tenants claim and the granted scope actually arrive.
+  describe 'full code flow through the strategy' do
+    let(:signing_key) { OpenSSL::PKey::RSA.new(2048) }
+    let(:team) { create(:team, account: account) }
+
+    around do |example|
+      test_mode = OmniAuth.config.test_mode
+      OmniAuth.config.test_mode = false
+      example.run
+    ensure
+      OmniAuth.config.test_mode = test_mode
+    end
+
+    before do
+      Shekel::TenantTeam.create!(account: account, tenant_id: tenant_id, team: team)
+    end
+
+    def id_token_for(nonce, tenants)
+      claims = {
+        iss: 'https://auth.example.test/oauth/admin', aud: 'chatwoot-test-client', sub: '42', nonce: nonce,
+        iat: Time.now.to_i, exp: 5.minutes.from_now.to_i, email: 'ada@shekel.test', realm: 'admin', tenants: tenants
+      }
+      JSON::JWT.new(claims).tap { |jwt| jwt.kid = 'test-key' }.sign(signing_key, :RS256).to_s
+    end
+
+    def stub_provider(nonce:, scope:, tenants:)
+      jwks = { keys: [JSON::JWK.new(signing_key.public_key, kid: 'test-key')] }
+      stub_request(:get, 'https://auth.example.test/oauth/jwks').to_return(
+        status: 200, body: jwks.to_json, headers: { 'Content-Type' => 'application/json' }
+      )
+      stub_request(:post, 'https://auth.example.test/oauth/admin/token').to_return(
+        status: 200,
+        headers: { 'Content-Type' => 'application/json' },
+        body: { access_token: 'opaque-access-token', token_type: 'Bearer', expires_in: 3600, scope: scope,
+                id_token: id_token_for(nonce, tenants) }.to_json
+      )
+      stub_request(:get, 'https://auth.example.test/oauth/admin/userinfo').to_return(
+        status: 200,
+        headers: { 'Content-Type' => 'application/json' },
+        body: { sub: '42', email: 'ada@shekel.test', name: 'Ada Admin', realm: 'admin', tenants: tenants }.to_json
+      )
+    end
+
+    def sign_in_through_provider(scope:, tenants:)
+      post '/omniauth/shekel'
+      authorize = Rack::Utils.parse_query(URI.parse(response.location).query)
+      stub_provider(nonce: authorize['nonce'], scope: scope, tenants: tenants)
+
+      get '/omniauth/shekel/callback', params: { code: 'auth-code', state: authorize['state'] }
+      expect(response).to redirect_to("#{frontend_url}/auth/shekel/callback")
+      follow_redirect!
+    end
+
+    it 'reads tenants from raw_info and the CRM admin grant from credentials.scope' do
+      with_modified_env(**shekel_env) do
+        sign_in_through_provider(scope: admin_scope, tenants: [tenant_claim(tenant_id)])
+
+        user = User.from_email('ada@shekel.test')
+        expect(redirect_query['sso_auth_token']).to be_present
+        expect(team.members).to include(user)
+        expect(account.account_users.find_by!(user: user).role).to eq('administrator')
+      end
+    end
+
+    it 'syncs an agent when the token response grants only CRM access' do
+      with_modified_env(**shekel_env) do
+        sign_in_through_provider(scope: access_scope, tenants: [])
+
+        user = User.from_email('ada@shekel.test')
+        expect(team.members).not_to include(user)
+        expect(account.account_users.find_by!(user: user).role).to eq('agent')
       end
     end
   end

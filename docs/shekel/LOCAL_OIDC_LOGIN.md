@@ -15,9 +15,9 @@ seat; it includes SAML/SSO, custom roles, audit logs, SLA, Captain).
   overlays (`prepend_mod_with`, `enterprise/app/**` behaviour) are not loaded.
 - `ENV.fetch('DISABLE_ENTERPRISE', false)` treats **any** value as "disabled", including
   the string `false`. Set it to `true` and never to anything else.
-- The `enterprise/` files are still in the tree (eager-load paths), only inert. A
-  production image must also delete the directory (`rm -rf enterprise spec/enterprise`)
-  before build; that is for the production build work, not this local setup.
+- The `enterprise/` files are still in the local tree (eager-load paths), only inert. The
+  image built from `docker/Dockerfile` deletes them (`rm -rf enterprise spec/enterprise`,
+  as upstream's CE build does) and sets `DISABLE_ENTERPRISE=true CW_EDITION=ce`.
 
 ## Run it
 
@@ -39,20 +39,23 @@ for Vite) so the URL is still `localhost:3000`: the redirect URI is exact-match.
 moves Postgres, Redis and Mailhog to loopback ports 55432, 56379 and 58025, because the
 shared dev host already uses 6379, 1025 and 8025.
 
-### Create an agent to sign in as
+### Create the account staff are provisioned into
 
-Sign-in only matches **existing** agents by email; nothing is auto-provisioned. Create the
-installation's first account through the onboarding screen, or from a console:
+Staff are provisioned on their first Shekel sign-in into one account, set by
+`SHEKEL_CHATWOOT_ACCOUNT_ID`. Create it through the onboarding screen, or from a console:
 
 ```sh
-$DC run --rm rails bundle exec rails runner '
-  account = Account.create!(name: "Shekel Local")
-  user = User.create!(name: "Local Admin", email: "<your admin email>", password: "<a strong password>", confirmed_at: Time.current)
-  AccountUser.create!(account: account, user: user, role: :administrator)
-'
+$DC run --rm rails bundle exec rails runner 'puts Account.create!(name: "Shekel Local").id'
 ```
 
-Use the same email as your authentication-api admin account.
+### Map tenants to teams
+
+Staff join the team mapped from each tenant in their `tenants` claim:
+
+```sh
+$DC run --rm rails bundle exec rails "shekel:map_tenant_team[<tenant uuid>,Acme Motors]"  # creates the team if missing
+$DC run --rm rails bundle exec rails shekel:list_tenant_teams
+```
 
 ## Environment variables
 
@@ -71,6 +74,10 @@ All go in the worktree's `.env` (gitignored; on the NAS it is a hardlink to
 | `SHEKEL_OIDC_TOKEN_URL` | `<host>/oauth/admin/token` |
 | `SHEKEL_OIDC_USERINFO_URL` | `<host>/oauth/admin/userinfo` |
 | `SHEKEL_OIDC_JWKS_URL` | `<host>/oauth/jwks` (shared by both realms) |
+| `SHEKEL_CHATWOOT_ACCOUNT_ID` | Required for sign-in. The account staff are provisioned into. **Setting it turns staff mode on** (`Shekel::OidcSettings.staff_mode?`): team-scoped visibility, Shekel as the only sign-in (no password, Google or SAML), no personal API tokens and the short session. Leave it unset to use upstream Chatwoot locally. |
+| `SHEKEL_SESSION_LIFESPAN_HOURS` | Optional, default `12`. How long a staff session lasts in staff mode (devise_token_auth `token_lifespan`). Read at boot. |
+| `SHEKEL_API_USER_IDS` | Optional, comma-separated user ids whose personal API token still works in staff mode (the Shailoq gateway's administrator service user). |
+| `SHEKEL_STAFF_HOSTS`, `SHEKEL_PUBLIC_HOST` | Optional locally (both unset leaves the host guard off). See [OPERATIONS.md](OPERATIONS.md#environment-variables). |
 | `SHEKEL_OIDC_DISCOVERY` | Optional. `true` reads the four URLs from `<issuer>/.well-known/openid-configuration` instead. Leave it off on staging until the nginx fix below is in. |
 
 `<host>` is `https://auth.shekel.africa` on staging. The endpoint paths come from
@@ -82,7 +89,8 @@ authentication-api (`routes/oauth.php`, `routes/oauth-protocol.php`,
 - `config/initializers/omniauth.rb` mounts an `omniauth_openid_connect` strategy named
   `shekel`. Its settings are read from `SHEKEL_OIDC_*` per request by
   `Shekel::OidcSettings` (`app/services/shekel/oidc_settings.rb`): authorization code flow,
-  PKCE (S256), state, nonce, `client_secret_basic`, scopes `openid email profile`. The ID
+  PKCE (S256), state, nonce, `client_secret_basic`, scopes
+  `openid email profile tenants customer_comms.access customer_comms.admin`. The ID
   token is verified against the JWKS for signature (RS256 only, pinned with
   `client_signing_alg`), issuer, audience and nonce. `realm` is read from the merged
   ID-token + userinfo claims (`extra.raw_info`); the ID-token value wins.
@@ -94,12 +102,34 @@ authentication-api (`routes/oauth.php`, `routes/oauth-protocol.php`,
     refused even if the email matches an agent). This is checked on the first callback hop
     (`redirect_callbacks`), because devise_token_auth drops `extra` (the ID-token claims)
     from the auth hash it carries to the second hop; a one-shot session flag passes the
-    result on;
-  - the email is matched case-insensitively to an existing `User`; no match means
-    `/app/login?error=no-account-found`, and nothing is created;
-  - a match signs in through upstream's SSO-token path (the same as Google sign-in).
-- Local email/password login still works. It is for local testing only; the spec requires
-  it to be disabled for staff before any real deployment.
+    result on, together with the `sub`, the tenant ids from the `tenants` claim that are
+    mapped to a team (only those, so the cookie session stays small), whether the claim
+    was present, and whether the token response's `scope` (`credentials.scope`) grants
+    `customer_comms.admin`;
+  - in staff mode every other OmniAuth provider (Google) is refused at both hops;
+  - `Shekel::StaffSync` (`app/services/shekel/staff_sync.rb`) then provisions and syncs
+    the staff member: finds the user by the IdP `sub` (stored as `custom_attributes.shekel_sub`),
+    then by email, and follows an email change at the IdP (same Chatwoot user, new email,
+    unless another user already holds it). **A user who already exists with the same email
+    (created by hand, or before Shekel sign-in) is adopted on their first Shekel sign-in**:
+    linked to the `sub`, confirmed, and given the role and teams of the claims. It creates
+    the user if neither matches (random password, confirmed), sets the role (administrator with `customer_comms.admin`, else agent),
+    joins the teams mapped from held tenants and leaves mapped teams for tenants no
+    longer held (unmapped teams are untouched), and adds them to every inbox. If the
+    `tenants` claim is absent (an older IdP), team membership is left as it is and a
+    warning is logged; an explicit empty list removes them from all mapped teams. It also
+    rotates their personal API token;
+  - the user signs in through upstream's SSO-token path, with a token marked as issued by
+    Shekel sign-in (`Shekel::SsoTokens`).
+- In staff mode (`SHEKEL_CHATWOOT_ACCOUNT_ID` set), password sign-in, password reset and the
+  profile password change are refused ("Sign in with Shekel instead.",
+  `ShekelPasswordLoginGuard`), and so is any SSO token not issued by Shekel sign-in (Google,
+  platform SSO links, super-admin impersonation). The login page hides the password form,
+  Google and SAML. Personal (user) API access tokens are refused unless the user is in
+  `SHEKEL_API_USER_IDS`, and the user JSON leaves the token blank; agent bot tokens work.
+  Staff mode keys on the account id, not the OIDC client id, so losing the OIDC settings
+  locks everyone out instead of opening the account; production refuses to boot in that
+  state.
 
 ### What the admin realm gives us
 
@@ -107,12 +137,17 @@ From authentication-api (`IdTokenClaimsBuilder`, `HasOidcSubject::identityClaims
 `OIDCController::userinfo`):
 
 - **ID token:** `iss` (`.../oauth/admin`), `aud` (client id), `sub` (admin id), `email`,
-  `name`, `realm` = `admin`, `nonce`. No `tenant_id` (admins sign in to no tenant) and no
-  `company_id`.
-- **Userinfo:** `sub`, plus `email` with the `email` scope and `name` with `profile`.
-- Neither carries the admin's tenants (`admin_client`, `all_tenants`). The team/inbox sync
-  in spec section 6.2 will need another source, e.g. an admin API call with the access
-  token or a new claim in authentication-api.
+  `name`, `realm` = `admin`, `nonce`, and with the `tenants` scope
+  `tenants: [{"id": "<uuid>", "slug": <string or null>, "country": <lowercase iso or null>}]`
+  (always a list; empty when none). Only `id` is used.
+- **Userinfo:** `sub`, plus `email` with the `email` scope, `name` with `profile` and
+  `tenants` with `tenants`.
+- authentication-api PR #682 (the `customer_comms.*` scopes and the `tenants` claim) must be
+  deployed before this fork; see the [deploy order](OPERATIONS.md#deploy-order).
+- **Token response:** `scope`, the granted scopes. The IdP refuses sign-in without
+  `customer_comms.access` only when the client lists it as a required scope, so Chatwoot
+  also refuses (`no-account-found`) unless the granted scope includes it.
+  `customer_comms.admin` is granted only to admins whose role holds it.
 
 ## Register the OAuth client (admin portal)
 
@@ -124,7 +159,9 @@ Ask an authentication-api admin to register, on **staging**:
 | Name | `Chatwoot (local dev)` |
 | Grant types | `authorization_code` only (no refresh token needed; Chatwoot keeps its own session) |
 | Redirect URIs | `http://localhost:3000/omniauth/shekel/callback` (exact match) |
-| Scopes | `openid`, `email`, `profile` |
+| Allowed scopes | `customer_comms.access`, `customer_comms.admin` |
+| Required scopes | `customer_comms.access` |
+| Identity scopes | `openid`, `email`, `profile`, `tenants`: requested by Chatwoot and always granted; not configured as allowed or required |
 | Confidential | yes (has a secret; `client_secret_basic`) |
 | PKCE | S256 (sent by Chatwoot; fine whether or not the client requires it) |
 | first_party | `true`, so staff are not shown a consent screen |
@@ -135,13 +172,64 @@ client can be set or rotated without opening `.env`. Then recreate `rails`:
 `$DC up -d --no-deps --force-recreate rails`.
 
 On staging, register the client in the admin portal (OAuth settings, staging-admin) or with
-`php artisan oauth:register-app --realm=admin ... --scopes= --secret-file=<new path>`
-(authentication-api S20-4821). The portal requires at least one allowed scope; pick
-`consent.read`, which Chatwoot never requests. `openid email profile` are identity scopes,
-always granted: do not add them as allowed or required scopes.
+`php artisan oauth:register-app --realm=admin ...` (authentication-api S20-4821), with
+allowed scopes `customer_comms.access customer_comms.admin` and required scope
+`customer_comms.access`. Identity scopes (`openid email profile tenants`) are always granted:
+do not add them as allowed or required scopes.
 
 Staging client (2026-11-17): `Chatwoot CRM (staging)`, admin realm, first-party,
-`authorization_code` + `refresh_token`, `client_secret_basic`, allowed scopes `consent.read`.
+`authorization_code` + `refresh_token`, `client_secret_basic`. It was registered with allowed
+scopes `consent.read` only, before the `customer_comms.*` scopes existed: update it to the
+allowed and required scopes above, or every sign-in is refused (no `customer_comms.access`
+in the granted scope).
+
+## Operating notes
+
+- **Keep `ENABLE_ACCOUNT_SIGNUP` off.** Staff are provisioned by Shekel sign-in only; public
+  sign-up would let anyone create an account of their own.
+- **Tenant ids in the cookie.** Only the tenant ids mapped to a team of the staff account
+  travel from the first callback hop to the second in the cookie session (about 40 bytes
+  each), so an `all_tenants` admin no longer overflows it. More than about 60 *mapped*
+  tenants would still hit `ActionDispatch::Cookies::CookieOverflow`.
+- **Session lifespan on first deploy.** `SHEKEL_SESSION_LIFESPAN_HOURS` applies to tokens
+  issued after the deploy; existing tokens keep their old (two-month) expiry. If the bound
+  must hold from day one, clear `users.tokens` on the first deploy (everyone signs in again).
+- **Inboxes.** Staff are added to every inbox that exists when they sign in; an inbox created
+  later is joined at their next sign-in.
+- **Misconfiguration.** If `SHEKEL_CHATWOOT_ACCOUNT_ID` is unset or names no account, sign-in
+  redirects to `/app/login?error=shekel-misconfigured` and logs an error.
+- **Password routes.** In staff mode, password sign-in, password reset, the
+  profile password change and devise_token_auth's registrations routes (`POST`, `PUT/PATCH`,
+  `DELETE /auth`) are all refused.
+
+## Team-scoped visibility
+
+In staff mode (`SHEKEL_CHATWOOT_ACCOUNT_ID` set), an **agent** (any non-administrator) sees only part of the
+account (`Shekel::ConversationVisibility`, `Shekel::ContactVisibility`,
+`app/services/shekel/`). Administrators see everything.
+
+- **Conversations:** those whose team is one of the agent's teams, plus those assigned to the
+  agent. An unteamed conversation is visible to administrators and its assignee only. This
+  holds for the lists, counts (meta and unread counts), search, filters, every
+  per-conversation endpoint (another team's conversation answers 404), notifications,
+  mentions and ActionCable events. When a team or assignee change hides a conversation from an
+  agent, their dashboard receives `shekel.conversation.hidden` and drops the row.
+- **Contacts:** a contact is visible when at least one of its conversations is. **A contact
+  with no conversations is visible to administrators only**, so an agent cannot open one, or
+  start a conversation with one; an administrator (or the gateway) starts the first
+  conversation. Contact events go to administrators and the agents who can see the contact.
+- **Inbound WhatsApp conversations start unteamed**, so agents see them only once the gateway
+  or the triage team sets a team (or assigns one).
+- **Agent-created conversations:** a conversation an agent starts without a team goes to
+  their team when they have exactly one; otherwise, if they still could not see it and it has
+  no assignee, it is assigned to them.
+- **Integrations** (the Shailoq gateway and any other API client) must use an agent bot token,
+  or the token of an administrator service user listed in `SHEKEL_API_USER_IDS`: every other
+  user's token is refused in staff mode.
+- **Locked to a single conversation:** in such an inbox an agent is handed back only a
+  conversation they can see; if none is, a new one is started.
+- **Accepted:** notifications created before an agent left a team still appear in their
+  notification list with the conversation's metadata; opening one answers 404.
 
 ## Staging discovery returns 403 (nginx)
 
@@ -189,11 +277,19 @@ uses the same snippet; it would have the same problem. Until then, keep
 $DC run --rm --no-deps -e RAILS_ENV=test rails bundle exec rails db:schema:load
 $DC run --rm --no-deps -e RAILS_ENV=test rails bundle exec rspec \
   spec/controllers/devise/shekel_oidc_callbacks_spec.rb spec/services/shekel \
+  spec/controllers/devise_overrides/shekel_password_login_guard_spec.rb \
   spec/controllers/devise/omniauth_callbacks_controller_spec.rb
 ```
 
 The specs set every `SHEKEL_OIDC_*` variable they depend on, so the real values that
 compose loads from `.env` do not leak into them.
+
+Upstream's specs expect upstream behaviour (password sign-in, inbox-wide visibility, user
+API tokens), which is what they get while staff mode is off. Staff mode keys on
+`SHEKEL_CHATWOOT_ACCOUNT_ID`, which the local `.env` does not set; if yours does, run
+upstream specs with `-e SHEKEL_CHATWOOT_ACCOUNT_ID=`. The Shekel specs set staff mode
+themselves. `-e SHEKEL_OIDC_CLIENT_ID=` keeps a real client id out of the specs that build
+the OmniAuth request.
 
 ## Building the images from a worktree
 
