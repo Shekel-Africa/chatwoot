@@ -1,5 +1,4 @@
 import fromUnixTime from 'date-fns/fromUnixTime';
-import differenceInDays from 'date-fns/differenceInDays';
 import Cookies from 'js-cookie';
 import { LOCAL_STORAGE_KEYS } from 'dashboard/constants/localStorage';
 import { SESSION_STORAGE_KEYS } from 'dashboard/constants/sessionStorage';
@@ -30,8 +29,11 @@ export const getHeaderExpiry = response =>
 
 export const setAuthCredentials = response => {
   const expiryDate = getHeaderExpiry(response);
+  // Shekel fork (S20-4853): expire the cookie with the token itself. Whole days
+  // rounded a 12-hour staff session (SHEKEL_SESSION_LIFESPAN_HOURS) down to 0,
+  // so the cookie expired as it was set and sign-in looped to the login page.
   Cookies.set('cw_d_session_info', JSON.stringify(response.headers), {
-    expires: differenceInDays(expiryDate, new Date()),
+    expires: expiryDate,
   });
   setUser(response.data.data, expiryDate);
 };
