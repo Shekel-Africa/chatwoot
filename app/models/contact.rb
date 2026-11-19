@@ -68,6 +68,8 @@ class Contact < ApplicationRecord
   after_destroy_commit :dispatch_destroy_event
   before_save :sync_contact_attributes
   include ContactCompanyAssociation
+  # Shekel fork: staff cannot change the shekel_* custom attributes.
+  include Shekel::LockedContactAttributes
 
   enum :contact_type, { visitor: 0, lead: 1, customer: 2 }
 

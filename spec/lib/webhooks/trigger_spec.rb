@@ -32,6 +32,15 @@ describe Webhooks::Trigger do
   end
 
   describe '#execute' do
+    it 'logs the failed webhook url without its query string or fragment' do
+      allow(SafeFetch).to receive(:fetch).and_raise(SafeFetch::FetchError.new('connection refused'))
+      allow(Rails.logger).to receive(:warn)
+
+      trigger.execute('https://gateway.example.test/hook?token=url-secret-value#frag', payload, webhook_type)
+
+      expect(Rails.logger).to have_received(:warn).with('Exception: Invalid webhook URL https://gateway.example.test/hook : connection refused')
+    end
+
     it 'triggers webhook' do
       expect(SafeFetch).to receive(:fetch).with(
         url,

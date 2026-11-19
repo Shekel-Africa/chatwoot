@@ -19,6 +19,10 @@ RSpec.describe AgentBots::WebhookJob do
     clear_performed_jobs
   end
 
+  it 'does not log its arguments, which hold the bot url and the message payload' do
+    expect(described_class.log_arguments).to be(false)
+  end
+
   it 'queues the job' do
     expect { job }.to have_enqueued_job(described_class)
       .with(url, payload, webhook_type)
