@@ -121,15 +121,23 @@ fetch, so prefer a public hostname behind the gateway's own auth) and restart Ra
 ## Locked contact attributes
 
 Contact custom attributes whose key starts with `shekel_` belong to the Shailoq gateway
-(dealer link, tenant and so on). Chatwoot refuses with `422` any request that creates,
-changes or deletes one unless it comes from a user listed in `SHEKEL_API_USER_IDS`
-(`Shekel::LockedContactAttributes`, on the `Contact` model, so it covers create, update,
-`destroy_custom_attributes` and contact merge). A dashboard edit that sends an unchanged
-`shekel_*` value back is accepted. A merge is refused when it would copy a `shekel_*` key
-from the merged contact onto the kept one. Saves with no signed-in actor (Sidekiq jobs, the
-Rails console) are not affected: the CSV import runs as a job and could write them (it is
-administrators only), and the website widget and Public API are not locked (they write only
-the visitor's own website-widget contact).
+(dealer link, tenant and so on). The lock is deny by default
+(`Shekel::LockedContactAttributes`, a validation on the `Contact` model): a save that creates,
+changes or deletes one fails (`422` through the API) unless it is made by
+
+- a **user** listed in `SHEKEL_API_USER_IDS`, signed in with its personal access token (the
+  gateway's service user; a bot token never counts, even if the bot's id equals a listed user id), or
+- code inside `Shekel::TrustedWriter.with { ... }`.
+
+Everyone else is refused: staff (administrators too), agent bots, the website widget, the
+Public API, contact merge and identify flows that would copy a `shekel_*` key onto another
+contact, the CSV import, background jobs and the Rails console. A save that sends an unchanged
+`shekel_*` value back is accepted, so a dashboard edit that echoes the attributes still works.
+
+Nothing in this app is wrapped in `Shekel::TrustedWriter`: none of the `shekel:*` tasks, services
+or jobs writes these keys, and the CSV import and merges are deliberately not trusted. Use it in
+the Rails console for a one-off repair, for example
+`Shekel::TrustedWriter.with { contact.update!(custom_attributes: contact.custom_attributes.except('shekel_dealer_id')) }`.
 
 ## Unlink: keeping the history, clearing the dealer link
 

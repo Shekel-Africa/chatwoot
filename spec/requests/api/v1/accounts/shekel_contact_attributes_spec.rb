@@ -8,7 +8,9 @@ RSpec.describe 'Shekel locked contact attributes', type: :request do
   let(:agent) { create(:user, account: account, role: :agent) }
   let(:service_user) { create(:user, account: account, role: :agent) }
   let(:contacts_url) { "/api/v1/accounts/#{account.id}/contacts" }
-  let(:contact) { create(:contact, account: account, custom_attributes: { 'shekel_dealer_id' => 'd-1', 'colour' => 'red' }) }
+  let(:contact) do
+    Shekel::TrustedWriter.with { create(:contact, account: account, custom_attributes: { 'shekel_dealer_id' => 'd-1', 'colour' => 'red' }) }
+  end
 
   around do |example|
     with_modified_env(SHEKEL_API_USER_IDS: service_user.id.to_s) { example.run }
@@ -26,6 +28,19 @@ RSpec.describe 'Shekel locked contact attributes', type: :request do
       patch "#{contacts_url}/#{contact.id}", headers: agent.create_new_auth_token, params: { custom_attributes: { shekel_dealer_id: 'd-2' } }
 
       expect(response).to have_http_status(:unprocessable_entity)
+      expect(contact.reload.custom_attributes['shekel_dealer_id']).to eq('d-1')
+    end
+
+    it 'refuses an agent bot token, even when the bot id equals a listed user id' do
+      agent_bot = create(:agent_bot, account: account)
+      create(:agent_bot_inbox, inbox: create(:inbox, account: account), agent_bot: agent_bot)
+
+      with_modified_env(SHEKEL_API_USER_IDS: agent_bot.id.to_s) do
+        patch "#{contacts_url}/#{contact.id}", headers: { api_access_token: agent_bot.access_token.token },
+                                               params: { custom_attributes: { shekel_dealer_id: 'd-2' } }
+      end
+
+      expect(response).not_to have_http_status(:success)
       expect(contact.reload.custom_attributes['shekel_dealer_id']).to eq('d-1')
     end
 
