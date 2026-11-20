@@ -3,8 +3,8 @@
 # - typing_on: when an agent or an agent bot turns typing on in a WhatsApp Cloud conversation, mark the latest incoming
 #   message read (blue ticks) and show "typing..." (Meta's typing indicator). Meta dismisses it when we reply or after
 #   25 seconds. There is no call to clear it early, so typing off sends nothing.
-# - react: send an emoji reaction to one incoming message (opt-in; the Shailoq gateway turns it on with
-#   SHAILOQ_WHATSAPP_SEEN_REACTION_ENABLED).
+# - react: send an emoji reaction to one incoming message, at most once per message. Nothing in Chatwoot calls it by
+#   itself; the Shailoq gateway does, unless SHAILOQ_WHATSAPP_SEEN_REACTION_ENABLED=false there.
 #
 # Only Channel::Whatsapp with provider whatsapp_cloud is affected; every other channel is a no-op. All of it is best
 # effort: it never raises into the caller, and it never logs message text, phone numbers or message ids.
@@ -20,6 +20,7 @@ module Shekel::WhatsappSeenSignal
   # Meta rejects mark-as-read and reactions for messages older than 30 days; stay clear of the edge.
   MAX_MESSAGE_AGE = 29.days
   MAX_EMOJI_LENGTH = 16
+  REACTION_ONCE_SECONDS = 2.days.to_i
 
   module_function
 
@@ -65,6 +66,8 @@ module Shekel::WhatsappSeenSignal
 
   def react(conversation, message, emoji)
     return false if reaction_problem(conversation, message, emoji)
+    # One reaction per incoming message, however often the caller (or a retry) asks.
+    return false if Redis::Alfred.set("SHEKEL::WHATSAPP_REACTION::#{message.id}", 1, nx: true, ex: REACTION_ONCE_SECONDS).blank?
 
     conversation.inbox.channel.provider_service.send_reaction(conversation.contact_inbox.source_id, message.source_id, emoji)
   end

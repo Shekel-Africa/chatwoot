@@ -105,7 +105,19 @@ RSpec.describe Shekel::WhatsappSeenSignal do
   describe '.react' do
     let(:reaction_response) { { messaging_product: 'whatsapp', messages: [{ id: 'wamid.reaction' }] }.to_json }
 
-    before { stub_request(:post, messages_url).to_return(status: 200, body: reaction_response, headers: json_headers) }
+    before do
+      stub_request(:post, messages_url).to_return(status: 200, body: reaction_response, headers: json_headers)
+      Redis::Alfred.delete("SHEKEL::WHATSAPP_REACTION::#{incoming.id}")
+    end
+
+    after { Redis::Alfred.delete("SHEKEL::WHATSAPP_REACTION::#{incoming.id}") }
+
+    it 'reacts only once to the same message' do
+      expect(described_class.react(conversation, incoming, '👀')).to be(true)
+      expect(described_class.react(conversation, incoming, '👀')).to be(false)
+
+      expect(a_request(:post, messages_url)).to have_been_made.once
+    end
 
     it 'sends a reaction to the incoming message' do
       expect(described_class.react(conversation, incoming, '👀')).to be(true)
