@@ -1,5 +1,7 @@
 class AgentBots::WebhookJob < WebhookJob
   queue_as :high
+  # Shekel fork: ActiveJob would log the arguments, which are the bot's URL (its query string can carry a secret) and the message payload.
+  self.log_arguments = false
   retry_on Webhooks::Trigger::RetryableError, wait: 3.seconds, attempts: 3 do |job, error|
     url, payload, webhook_type = job.arguments
     kwargs = job.arguments.last.is_a?(Hash) ? job.arguments.last : {}

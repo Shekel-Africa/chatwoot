@@ -25,8 +25,9 @@ in [LOCAL_OIDC_LOGIN.md](LOCAL_OIDC_LOGIN.md); the audit log is in [AUDIT_LOG.md
    (`/super_admin`, its own Devise sign-in, not affected by staff mode); keep one.
 6. On the first deploy, clear `users.tokens` (`User.update_all(tokens: {})`) so sessions
    issued before staff mode (two-month expiry) end and everyone signs in through Shekel.
-7. Map tenants to teams (below).
-8. Add a Sidekiq failure alert for `Shekel::RetentionJob` (dead or retried jobs on the `low`
+7. Map tenants to teams and create the triage team (below).
+8. Hand the WhatsApp inbox to Shailoq: `bundle exec rails shekel:configure_agent_bot` (below).
+9. Add a Sidekiq failure alert for `Shekel::RetentionJob` (dead or retried jobs on the `low`
    queue), then watch a few dry runs of the retention job and turn the dry run off.
 
 ## Environment variables
@@ -39,9 +40,11 @@ Values live in the deployment's secret store, never in git.
 | `SHEKEL_OIDC_CLIENT_ID`, `SHEKEL_OIDC_CLIENT_SECRET`, `SHEKEL_OIDC_ISSUER`, `SHEKEL_OIDC_REDIRECT_URI`, `SHEKEL_OIDC_AUTHORIZE_URL`, `SHEKEL_OIDC_TOKEN_URL`, `SHEKEL_OIDC_USERINFO_URL`, `SHEKEL_OIDC_JWKS_URL`, `SHEKEL_OIDC_DISCOVERY` | — | Staff sign-in through authentication-api's admin realm. The client id shows the Shekel button. Meanings in [LOCAL_OIDC_LOGIN.md](LOCAL_OIDC_LOGIN.md#environment-variables). |
 | `SHEKEL_CHATWOOT_ACCOUNT_ID` | — | The account staff are provisioned into. Required for sign-in, `shekel:*` tasks and the retention audit row. **Setting it turns staff mode on**: team-scoped visibility, Shekel as the only sign-in (password, Google, SAML and non-Shekel SSO tokens refused), personal API tokens refused, 12-hour sessions. |
 | `SHEKEL_SESSION_LIFESPAN_HOURS` | `12` | Staff session length in staff mode. Read at boot. |
-| `SHEKEL_API_USER_IDS` | — | Comma-separated user ids whose personal API access token still works in staff mode: the Shailoq gateway's administrator service user (contact deletion on unlink). Every other user's token is refused and blanked in the user JSON; agent bot tokens are unaffected. |
+| `SHEKEL_API_USER_IDS` | — | Comma-separated user ids whose personal API access token still works in staff mode: the Shailoq gateway's service user, the only user who can set or clear the `shekel_*` contact attributes (see [Locked contact attributes](#locked-contact-attributes)). Every other user's token is refused and blanked in the user JSON; agent bot tokens are unaffected. |
 | `SHEKEL_STAFF_HOSTS` | — | Comma-separated bare hostnames staff use (the VPN host): only these get the dashboard, the API, sign-in, `/cable`, Active Storage, Sidekiq Web and `/health`. Normalised like `SHEKEL_PUBLIC_HOST` (case, port and trailing dots ignored). **Every other `Host`** (the public host, an IP, `localhost`, an empty or unknown `Host`) gets only `GET`/`POST /webhooks/whatsapp/<number>` and a bare 404 for everything else, so load-balancer and container health checks must send a staff `Host`. |
 | `SHEKEL_PUBLIC_HOST` | — | Bare public hostname Meta delivers webhooks to (scheme, path and port are stripped with a warning). It gets only the webhook paths, like any non-staff `Host`. The guard trusts `Host` only, never `X-Forwarded-Host`: the PUBLIC listener must force `Host` to the public hostname, or reject any request whose `Host` is not the public hostname, otherwise a request through public ingress with `Host: <vpn host>` bypasses the guard. Register Meta's callback URL without a trailing slash; the WhatsApp channel phone number must be digits with an optional leading `+`. The guard is off only when both this and `SHEKEL_STAFF_HOSTS` are unset (local dev); with only one set it logs a warning and still enforces (with no staff hosts, every `Host` is restricted). |
+| `SHEKEL_SHAILOQ_WEBHOOK_URL` | — | Read by `shekel:configure_agent_bot` only: the gateway URL the Shailoq agent bot posts webhooks to. |
+| `SHEKEL_SHAILOQ_INBOX_ID` | — | Read by `shekel:configure_agent_bot` only: id of the WhatsApp inbox (in `SHEKEL_CHATWOOT_ACCOUNT_ID`) handed to Shailoq. |
 | `SHEKEL_RETENTION_BOT_ONLY_DAYS` | `30` | Days of inactivity before a bot-only conversation is deleted. |
 | `SHEKEL_RETENTION_WITH_PERSON_MONTHS` | `12` | Months of inactivity before a conversation a person took part in is deleted. |
 | `SHEKEL_RETENTION_DRY_RUN` | `true` | While true (or unset), the retention job only counts, logs and audits. Set `false` to delete. |
@@ -74,21 +77,84 @@ map it to a tenant, and add its members by hand: staff sync only adds and remove
 teams, so manual membership of the triage team survives sign-ins. Agents see only their
 teams' conversations; administrators see all.
 
-## Unlink: deleting a dealer's data
+No task creates the triage team: it is a manual, one-off step, and nothing in the fork checks
+that it exists. `shekel:map_tenant_team` lowercases the team name it creates (`Acme Motors`
+becomes `acme motors`), so a mapped team and a hand-made one with the same name are the
+same team.
 
-On unlink or account closure the gateway deletes the contact through Chatwoot's API:
+## Shailoq agent bot
+
+```sh
+SHEKEL_SHAILOQ_WEBHOOK_URL=https://<gateway host>/<webhook path> \
+SHEKEL_SHAILOQ_INBOX_ID=<WhatsApp inbox id> \
+bundle exec rails shekel:configure_agent_bot
+```
+
+Creates or updates the agent bot named `Shailoq` in the `SHEKEL_CHATWOOT_ACCOUNT_ID` account
+with that webhook URL, and attaches it (active) to the inbox. It is idempotent: run it after
+every deploy and whenever the URL changes. The bot's access token and webhook secret are
+generated by Chatwoot once and kept across runs; the task never prints them, nor the URL's
+path or query. An inbox has one bot: another bot on it is replaced and the task says so.
+Read the values when you configure the gateway:
+
+- UI: Settings > Bots, open Shailoq (administrators see the access token and the secret).
+- Rails console: `AgentBot.find_by(name: 'Shailoq').access_token.token` and `.secret`.
+
+The gateway uses the access token (`api_access_token` header) to post replies as the bot.
+
+**Webhooks are signed.** Every delivery carries `X-Chatwoot-Timestamp` (unix seconds) and
+`X-Chatwoot-Signature: sha256=<hex>`, the HMAC-SHA256 of `"<timestamp>.<raw body>"` with the
+bot's secret (`Webhooks::Trigger`; `AgentBotListener` passes `agent_bot.secret` to
+`AgentBots::WebhookJob`), plus a unique `X-Chatwoot-Delivery` id. The gateway must verify the
+signature and reject stale timestamps; that is its authentication. Do not put a secret in
+`SHEKEL_SHAILOQ_WEBHOOK_URL`: the `agent_bots` API returns the URL to every agent and administrator, and Chatwoot itself logs only its scheme, host and path (a failed delivery
+logs the URL with the query string and fragment removed, and `AgentBots::WebhookJob` does not
+log its arguments). If a secret in the URL is ever needed anyway, name the query key `token`
+or `key`, which Rails' `filter_parameters` redacts in request logs, and make sure the gateway's
+own ingress and access logs do not record query strings: Chatwoot's nginx never sees this
+outbound URL, so that setting lives with the gateway's reverse proxy, not in this repo.
+
+Chatwoot refuses webhook URLs that resolve to a private network. If the gateway is reached on
+a private address, set `SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true` (it relaxes every outbound
+fetch, so prefer a public hostname behind the gateway's own auth) and restart Rails and Sidekiq.
+
+## Locked contact attributes
+
+Contact custom attributes whose key starts with `shekel_` belong to the Shailoq gateway
+(dealer link, tenant and so on). The lock is deny by default
+(`Shekel::LockedContactAttributes`, a validation on the `Contact` model): a save that creates,
+changes or deletes one fails (`422` through the API) unless it is made by
+
+- a **user** listed in `SHEKEL_API_USER_IDS`, signed in with its personal access token (the
+  gateway's service user; a bot token never counts, even if the bot's id equals a listed user id), or
+- code inside `Shekel::TrustedWriter.with { ... }`.
+
+Everyone else is refused: staff (administrators too), agent bots, the website widget, the
+Public API, contact merge and identify flows that would copy a `shekel_*` key onto another
+contact, the CSV import, background jobs and the Rails console. A save that sends an unchanged
+`shekel_*` value back is accepted, so a dashboard edit that echoes the attributes still works.
+
+Nothing in this app is wrapped in `Shekel::TrustedWriter`: none of the `shekel:*` tasks, services
+or jobs writes these keys, and the CSV import and merges are deliberately not trusted. Use it in
+the Rails console for a one-off repair, for example
+`Shekel::TrustedWriter.with { contact.update!(custom_attributes: contact.custom_attributes.except('shekel_dealer_id')) }`.
+
+## Unlink: keeping the history, clearing the dealer link
+
+Owner decision O5: on unlink the conversation history is kept. The gateway does not delete
+the contact; it clears the contact's `shekel_*` attributes with the service user's token
+(a user listed in `SHEKEL_API_USER_IDS`; it needs no administrator role):
 
 ```
-DELETE /api/v1/accounts/<account_id>/contacts/<contact_id>
-api_access_token: <administrator's access token>
+POST /api/v1/accounts/<account_id>/contacts/<contact_id>/destroy_custom_attributes
+api_access_token: <service user's access token>
+{ "custom_attributes": ["shekel_dealer_id", "shekel_tenant_id"] }
 ```
 
-This deletes the contact and, in the background, its conversations and messages. It needs
-an **administrator user's** access token: `ContactPolicy#destroy?` allows administrators
-only, so an agent bot token (and an agent's) is refused. Use a dedicated administrator
-service user, list its id in `SHEKEL_API_USER_IDS` (other users' tokens are refused in staff
-mode) and keep its token in the gateway's secret store. It never signs in through Shekel, so
-its token is not rotated. The audit log is not touched.
+Other custom attributes stay. Keep the token in the gateway's secret store; the service user
+never signs in through Shekel, so its token is not rotated. The contact and its conversations
+stay in Chatwoot; conversations are removed only by [Retention](#retention) after the usual
+inactivity period, and the audit log is not touched.
 
 ## Retention
 

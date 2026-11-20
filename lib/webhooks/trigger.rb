@@ -33,7 +33,7 @@ class Webhooks::Trigger
 
   def handle_failure(error)
     handle_error(error)
-    Rails.logger.warn "Exception: Invalid webhook URL #{@url} : #{error.message}"
+    Rails.logger.warn "Exception: Invalid webhook URL #{loggable_url} : #{error.message}"
   end
 
   private
@@ -60,6 +60,11 @@ class Webhooks::Trigger
       headers['X-Chatwoot-Signature'] = "sha256=#{OpenSSL::HMAC.hexdigest('SHA256', @secret, "#{ts}.#{body}")}"
     end
     headers
+  end
+
+  # Shekel fork: the query string can carry the receiver's secret (the Shailoq gateway), so keep it out of the logs.
+  def loggable_url
+    @url.to_s.split(/[?#]/).first
   end
 
   def handle_error(error)

@@ -188,6 +188,7 @@ en:
         invalid: Invalid email
       phone_number:
         invalid: should be in e164 format
+      shekel_attributes_locked: Attributes starting with shekel_ are managed by the Shailoq gateway and cannot be changed here
     companies:
       domain:
         invalid: must be a valid domain name
