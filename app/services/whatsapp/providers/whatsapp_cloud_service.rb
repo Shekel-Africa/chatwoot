@@ -258,4 +258,6 @@ class Whatsapp::Providers::WhatsappCloudService < Whatsapp::Providers::BaseServi
   end
 end
 
+# Shekel fork: seen + typing indicator and reactions (kept in their own module to leave this class untouched)
+Whatsapp::Providers::WhatsappCloudService.include(Whatsapp::Providers::SeenSignals)
 Whatsapp::Providers::WhatsappCloudService.prepend_mod_with('Whatsapp::Providers::WhatsappCloudService')

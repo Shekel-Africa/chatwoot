@@ -34,6 +34,50 @@ describe Whatsapp::Providers::WhatsappCloudService do
       .to_return(status: 200, body: { id: 'uploaded_media_id' }.to_json, headers: response_headers)
   end
 
+  describe '#send_typing_indicator' do
+    let(:url) { 'https://graph.facebook.com/v24.0/123456789/messages' }
+
+    it 'marks the message read and asks for a typing indicator' do
+      stub_request(:post, url).to_return(status: 200, body: { success: true }.to_json, headers: response_headers)
+
+      expect(service.send_typing_indicator('wamid.in')).to be(true)
+      expect(a_request(:post, url).with(
+               body: { messaging_product: 'whatsapp', status: 'read', message_id: 'wamid.in', typing_indicator: { type: 'text' } }.to_json
+             )).to have_been_made.once
+    end
+
+    it 'returns false when Meta refuses' do
+      stub_request(:post, url).to_return(status: 400, body: { error: { code: 131_009 } }.to_json, headers: response_headers)
+
+      expect(service.send_typing_indicator('wamid.in')).to be(false)
+    end
+  end
+
+  describe '#send_reaction' do
+    let(:url) { 'https://graph.facebook.com/v24.0/123456789/messages' }
+
+    it 'sends a reaction to a phone number' do
+      stub_request(:post, url).to_return(status: 200, body: whatsapp_response.to_json, headers: response_headers)
+
+      expect(service.send_reaction('+2348012345678', 'wamid.in', '👀')).to be(true)
+      expect(a_request(:post, url).with do |req|
+        body = JSON.parse(req.body)
+        body['to'] == '+2348012345678' && body['type'] == 'reaction' && body['reaction']['emoji'] == '👀'
+      end).to have_been_made.once
+    end
+
+    it 'sends the recipient field for a BSUID' do
+      stub_request(:post, url).to_return(status: 200, body: whatsapp_response.to_json, headers: response_headers)
+
+      service.send_reaction('US.13491208655302741918', 'wamid.in', '👀')
+
+      expect(a_request(:post, url).with do |req|
+        body = JSON.parse(req.body)
+        body['recipient'] == 'US.13491208655302741918' && !body.key?('to')
+      end).to have_been_made.once
+    end
+  end
+
   describe '#send_message' do
     context 'when called' do
       it 'calls message endpoints for normal messages' do

@@ -17,6 +17,8 @@ class Conversations::TypingStatusManager
     case params[:typing_status]
     when 'on'
       trigger_typing_event(CONVERSATION_TYPING_ON, params[:is_private])
+      # Shekel fork: a WhatsApp Cloud contact gets blue ticks and "typing..." (no-op for every other channel).
+      Shekel::WhatsappSeenSignal.enqueue_typing(conversation) unless ActiveModel::Type::Boolean.new.cast(params[:is_private])
     when 'off'
       trigger_typing_event(CONVERSATION_TYPING_OFF, params[:is_private])
     end
