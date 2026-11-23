@@ -7,8 +7,11 @@ import { useStore, useStoreGetters } from 'dashboard/composables/store';
 import { useEmitter } from 'dashboard/composables/emitter';
 import { useKeyboardEvents } from 'dashboard/composables/useKeyboardEvents';
 import { useConversationRequiredAttributes } from 'dashboard/composables/useConversationRequiredAttributes';
+import { useAgentsList } from 'dashboard/composables/useAgentsList';
 
 import WootDropdownItem from 'shared/components/ui/dropdown/DropdownItem.vue';
+import WootDropdownHeader from 'shared/components/ui/dropdown/DropdownHeader.vue';
+import WootDropdownDivider from 'shared/components/ui/dropdown/DropdownDivider.vue';
 import WootDropdownMenu from 'shared/components/ui/dropdown/DropdownMenu.vue';
 import wootConstants from 'dashboard/constants/globals';
 import {
@@ -36,6 +39,14 @@ const closeDropdown = () => toggleDropdown(false);
 const openDropdown = () => toggleDropdown(true);
 
 const currentChat = computed(() => getters.getSelectedChat.value);
+
+// The bots this inbox can hand a chat back to (loaded by ConversationBox with the assignable agents).
+const { assignableAgents } = useAgentsList(false, { includeAIAssignees: true });
+const bots = computed(() =>
+  (assignableAgents.value || []).filter(
+    agent => agent.assignee_type === 'AgentBot'
+  )
+);
 
 const isOpen = computed(
   () => currentChat.value.status === wootConstants.STATUS_TYPE.OPEN
@@ -99,6 +110,25 @@ const toggleStatus = (status, snoozedUntil, customAttributes = null) => {
     useAlert(t('CONVERSATION.CHANGE_STATUS'));
     isLoading.value = false;
   });
+};
+
+// Assigning a bot clears the human assignee and sets the chat to Pending, so the bot answers again.
+const handBackToBot = bot => {
+  closeDropdown();
+  isLoading.value = true;
+
+  store
+    .dispatch('assignAgent', {
+      conversationId: currentChat.value.id,
+      agentId: bot.id,
+      assigneeType: 'AgentBot',
+    })
+    .then(() => {
+      useAlert(t('CONVERSATION.RESOLVE_DROPDOWN.HAND_BACK_DONE'));
+    })
+    .finally(() => {
+      isLoading.value = false;
+    });
 };
 
 const handleResolveWithAttributes = ({ attributes, context }) => {
@@ -229,6 +259,28 @@ useEmitter(CMD_RESOLVE_CONVERSATION, onCmdResolveConversation);
       class="border rounded-lg shadow-lg border-n-strong dark:border-n-strong box-content p-2 w-fit z-10 bg-n-alpha-3 backdrop-blur-[100px] absolute block left-auto top-full mt-0.5 start-0 xl:start-auto xl:end-0 max-w-[12.5rem] min-w-[9.75rem] [&_ul>li]:mb-0"
     >
       <WootDropdownMenu class="mb-0">
+        <template v-if="bots.length">
+          <WootDropdownHeader
+            :title="t('CONVERSATION.RESOLVE_DROPDOWN.HAND_BACK_TITLE')"
+          />
+          <WootDropdownItem v-for="bot in bots" :key="`bot-${bot.id}`">
+            <Button
+              data-testid="hand-back-to-bot"
+              :data-bot-id="bot.id"
+              :label="bot.name"
+              :title="t('CONVERSATION.RESOLVE_DROPDOWN.HAND_BACK_HINT')"
+              ghost
+              slate
+              sm
+              start
+              icon="i-lucide-bot"
+              class="w-full"
+              :is-loading="isLoading"
+              @click="() => handBackToBot(bot)"
+            />
+          </WootDropdownItem>
+          <WootDropdownDivider />
+        </template>
         <WootDropdownItem v-if="!isPending">
           <Button
             :label="t('CONVERSATION.RESOLVE_DROPDOWN.SNOOZE_UNTIL')"

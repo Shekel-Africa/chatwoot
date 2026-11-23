@@ -191,6 +191,9 @@
       }
     },
     "RESOLVE_DROPDOWN": {
+      "HAND_BACK_TITLE": "Hand back to bot",
+      "HAND_BACK_HINT": "Removes the person assigned and sets the chat to Pending, so this bot answers the next message",
+      "HAND_BACK_DONE": "Handed back to the bot",
       "MARK_PENDING": "Mark as pending",
       "SNOOZE_UNTIL": "Snooze",
       "SNOOZE": {
