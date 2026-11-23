@@ -111,6 +111,57 @@ describe Webhooks::Trigger do
         expect(Conversations::ActivityMessageJob).not_to have_been_enqueued
       end
 
+      it 'raises timeouts and connection errors for retry and does not reopen conversation immediately' do
+        payload = { event: 'message_created', id: pending_message.id }
+
+        expect(SafeFetch).to receive(:fetch).and_raise(SafeFetch::FetchError.new('execution expired'))
+
+        expect { trigger.execute(url, payload, webhook_type) }
+          .to(raise_error do |error|
+            expect(error.class.name).to eq('Webhooks::Trigger::RetryableError')
+            expect(error.status).to be_nil
+          end)
+        expect(pending_conversation.reload.status).to eq('pending')
+        expect(Conversations::ActivityMessageJob).not_to have_been_enqueued
+      end
+
+      it 'still reopens the conversation for a connection error after retries are exhausted' do
+        payload = { event: 'message_created', id: pending_message.id }
+        error = Webhooks::Trigger::RetryableError.new(status: nil, message: 'execution expired')
+
+        perform_enqueued_jobs do
+          described_class.new(url, payload, webhook_type).handle_failure(error)
+        end
+
+        expect(pending_conversation.reload.status).to eq('open')
+      end
+
+      it 'logs one structured line and reports the error when it hands the conversation to a person' do
+        payload = { event: 'message_created', id: pending_message.id }
+        tracker = instance_double(ChatwootExceptionTracker, capture_exception: nil)
+        allow(ChatwootExceptionTracker).to receive(:new).and_return(tracker)
+        allow(Rails.logger).to receive(:error)
+
+        expect(SafeFetch).to receive(:fetch).and_raise(SafeFetch::HttpError.new('404 Not Found'))
+        trigger.execute(url, payload, webhook_type)
+
+        expected = "agent_bot_failure account=#{account.id} conversation=#{pending_conversation.id} error=SafeFetch::HttpError"
+        expect(Rails.logger).to have_received(:error).with(expected)
+        expect(ChatwootExceptionTracker).to have_received(:new).with(instance_of(SafeFetch::HttpError), account: account)
+        expect(tracker).to have_received(:capture_exception)
+      end
+
+      it 'does not log a hand-over when the conversation is kept pending' do
+        account.update(keep_pending_on_bot_failure: true)
+        payload = { event: 'message_created', id: pending_message.id }
+        allow(Rails.logger).to receive(:error)
+
+        expect(SafeFetch).to receive(:fetch).and_raise(SafeFetch::HttpError.new('404 Not Found'))
+        trigger.execute(url, payload, webhook_type)
+
+        expect(Rails.logger).not_to have_received(:error).with(/agent_bot_failure/)
+      end
+
       it 'reopens conversation and enqueues activity message if pending' do
         payload = { event: 'message_created', id: pending_message.id }
 
