@@ -161,8 +161,29 @@ describe('ResolveAction hand back to a bot', () => {
     );
   });
 
-  it('is not offered when the chat is already pending', () => {
-    const wrapper = mountWith('pending');
-    expect(wrapper.find('[data-bot-id="7"]').exists()).toBe(false);
-  });
+  it.each(['pending', 'snoozed'])(
+    'is offered on a %s chat, with only the bots in the menu',
+    async status => {
+      const wrapper = mountWith(status);
+      await openMenu(wrapper);
+      expect(itemLabels(wrapper)).toEqual([SHAILOQ.name]);
+      expect(wrapper.find('[data-testid="divider"]').exists()).toBe(false);
+
+      await wrapper.find('[data-bot-id="7"]').trigger('click');
+      expect(state.dispatch).toHaveBeenCalledWith('assignAgent', {
+        conversationId: 42,
+        agentId: 7,
+        assigneeType: 'AgentBot',
+      });
+    }
+  );
+
+  it.each(['pending', 'snoozed'])(
+    'has no dropdown on a %s chat when the inbox has no bot',
+    status => {
+      const wrapper = mountWith(status, [PERSON]);
+      // Only the Open button, no chevron.
+      expect(wrapper.findAll('button')).toHaveLength(1);
+    }
+  );
 });

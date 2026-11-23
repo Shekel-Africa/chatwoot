@@ -61,8 +61,12 @@ const isSnoozed = computed(
   () => currentChat.value.status === wootConstants.STATUS_TYPE.SNOOZED
 );
 
+// Snooze and Mark as pending only make sense on an open or resolved chat.
+const canChangeStatus = computed(() => !isPending.value && !isSnoozed.value);
+
+// A pending or snoozed chat still needs the dropdown when there is a bot to hand it back to.
 const showAdditionalActions = computed(
-  () => !isPending.value && !isSnoozed.value
+  () => canChangeStatus.value || bots.value.length > 0
 );
 
 const showOpenButton = computed(() => {
@@ -279,9 +283,9 @@ useEmitter(CMD_RESOLVE_CONVERSATION, onCmdResolveConversation);
               @click="() => handBackToBot(bot)"
             />
           </WootDropdownItem>
-          <WootDropdownDivider />
+          <WootDropdownDivider v-if="canChangeStatus" />
         </template>
-        <WootDropdownItem v-if="!isPending">
+        <WootDropdownItem v-if="canChangeStatus">
           <Button
             :label="t('CONVERSATION.RESOLVE_DROPDOWN.SNOOZE_UNTIL')"
             ghost
@@ -293,7 +297,7 @@ useEmitter(CMD_RESOLVE_CONVERSATION, onCmdResolveConversation);
             @click="() => openSnoozeModal()"
           />
         </WootDropdownItem>
-        <WootDropdownItem v-if="!isPending">
+        <WootDropdownItem v-if="canChangeStatus">
           <Button
             :label="t('CONVERSATION.RESOLVE_DROPDOWN.MARK_PENDING')"
             ghost
