@@ -73,19 +73,27 @@ class Webhooks::Trigger
 
     case @webhook_type
     when :agent_bot_webhook
-      update_conversation_status(message)
+      update_conversation_status(message, error)
     when :api_inbox_webhook
       update_message_status(error)
     end
   end
 
-  def update_conversation_status(message)
+  def update_conversation_status(message, error)
     conversation = message.conversation
     return unless conversation&.pending?
     return if conversation&.account&.keep_pending_on_bot_failure
 
     conversation.open!
     create_agent_bot_error_activity(conversation)
+    report_agent_bot_failure(conversation, error)
+  end
+
+  # The chat now waits for a person and the bot stays silent in it, so make the hand-over visible:
+  # one greppable line (ids and error class only, no message text) and an exception-tracker event.
+  def report_agent_bot_failure(conversation, error)
+    Rails.logger.error "agent_bot_failure account=#{conversation.account_id} conversation=#{conversation.id} error=#{error.class.name}"
+    ChatwootExceptionTracker.new(error, account: conversation.account).capture_exception
   end
 
   def create_agent_bot_error_activity(conversation)
@@ -127,8 +135,12 @@ class Webhooks::Trigger
     timeout&.positive? ? timeout : 5
   end
 
+  # A timeout or a refused/unreachable connection (SafeFetch::FetchError) is retried like a 429 or 500:
+  # the bot is usually only slow or restarting, and the bot de-duplicates a repeated message id.
   def retryable_agent_bot_error?(error)
-    @webhook_type == :agent_bot_webhook && RETRYABLE_AGENT_BOT_STATUSES.include?(http_status(error))
+    return false unless @webhook_type == :agent_bot_webhook
+
+    RETRYABLE_AGENT_BOT_STATUSES.include?(http_status(error)) || error.is_a?(SafeFetch::FetchError)
   end
 
   def http_status(error)
