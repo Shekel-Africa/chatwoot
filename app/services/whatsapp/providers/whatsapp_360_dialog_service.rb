@@ -1,8 +1,12 @@
 class Whatsapp::Providers::Whatsapp360DialogService < Whatsapp::Providers::BaseService
+  include Whatsapp::Providers::CtaUrlCards # Shekel fork: cards as CTA URL messages
+
   def send_message(phone_number, message)
     @message = message
     if message.attachments.present?
       send_attachment_message(phone_number, message)
+    elsif cards_message?(message)
+      send_cards_message(phone_number, message)
     elsif message.content_type == 'input_select'
       send_interactive_text_message(phone_number, message)
     else
@@ -109,6 +113,11 @@ class Whatsapp::Providers::Whatsapp360DialogService < Whatsapp::Providers::BaseS
       },
       components: template_info[:parameters]
     }
+  end
+
+  # Shekel fork: used by Whatsapp::Providers::CtaUrlCards. Returns the raw response.
+  def post_message_payload(phone_number, fields)
+    HTTParty.post("#{api_base_path}/messages", headers: api_headers, body: { to: phone_number, **fields }.to_json)
   end
 
   def send_interactive_text_message(phone_number, message)

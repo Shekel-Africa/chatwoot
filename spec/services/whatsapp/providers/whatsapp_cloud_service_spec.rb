@@ -329,6 +329,12 @@ describe Whatsapp::Providers::WhatsappCloudService do
     end
   end
 
+  describe 'cards messages' do
+    it_behaves_like 'whatsapp cta url cards',
+                    url: 'https://graph.facebook.com/v24.0/123456789/messages',
+                    request_body: ->(fields) { { messaging_product: 'whatsapp', to: '+123456789', **fields } }
+  end
+
   describe '#send_template' do
     let(:template_info) do
       {
