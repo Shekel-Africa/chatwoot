@@ -1,9 +1,11 @@
-class Whatsapp::Providers::WhatsappCloudService < Whatsapp::Providers::BaseService
+class Whatsapp::Providers::WhatsappCloudService < Whatsapp::Providers::BaseService # rubocop:disable Metrics/ClassLength
   def send_message(phone_number, message)
     @message = message
 
     if message.attachments.present?
       send_attachment_message(phone_number, message)
+    elsif cards_message?(message)
+      send_cards_message(phone_number, message)
     elsif message.content_type == 'input_select'
       send_interactive_text_message(phone_number, message)
     else
@@ -240,6 +242,15 @@ class Whatsapp::Providers::WhatsappCloudService < Whatsapp::Providers::BaseServi
     }
   end
 
+  # Shekel fork: used by Whatsapp::Providers::CtaUrlCards. Returns the raw response.
+  def post_message_payload(phone_number, fields)
+    HTTParty.post(
+      "#{phone_id_path('v24.0')}/messages",
+      headers: api_headers,
+      body: { messaging_product: 'whatsapp', **recipient_params(phone_number), **fields }.to_json
+    )
+  end
+
   def send_interactive_text_message(phone_number, message)
     payload = create_payload_based_on_items(message)
 
@@ -260,4 +271,6 @@ end
 
 # Shekel fork: seen + typing indicator and reactions (kept in their own module to leave this class untouched)
 Whatsapp::Providers::WhatsappCloudService.include(Whatsapp::Providers::SeenSignals)
+# Shekel fork: cards as CTA URL messages
+Whatsapp::Providers::WhatsappCloudService.include(Whatsapp::Providers::CtaUrlCards)
 Whatsapp::Providers::WhatsappCloudService.prepend_mod_with('Whatsapp::Providers::WhatsappCloudService')

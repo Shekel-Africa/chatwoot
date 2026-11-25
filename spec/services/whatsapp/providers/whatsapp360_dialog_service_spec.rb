@@ -126,4 +126,10 @@ describe Whatsapp::Providers::Whatsapp360DialogService do
       end
     end
   end
+
+  describe 'cards messages' do
+    it_behaves_like 'whatsapp cta url cards',
+                    url: 'https://waba.360dialog.io/v1/messages',
+                    request_body: ->(fields) { { to: '+123456789', **fields } }
+  end
 end

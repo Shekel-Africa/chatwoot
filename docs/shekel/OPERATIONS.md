@@ -127,6 +127,18 @@ fetch, so prefer a public hostname behind the gateway's own auth) and restart Ra
 
 Sources: Meta, [Typing indicators](https://developers.facebook.com/documentation/business-messaging/whatsapp/typing-indicators/), [Mark messages as read](https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/mark-message-as-read/), [Reaction messages](https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/reaction-messages/), [Send messages](https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/send-messages/).
 
+## Cards on WhatsApp (CTA URL messages)
+
+For **WhatsApp Cloud** and **360dialog** inboxes, an outgoing message with `content_type: cards` (Chatwoot's own `content_attributes.items` shape: `title`, `description`, `media_url`, `actions`) is sent to the contact as Meta interactive **CTA URL** messages, one per card (the first 5 only): an image header, a body and one link button. Other channels are unchanged.
+
+- Header: the image from `media_url`, only when it is an `https` URL; otherwise no header. Meta must be able to fetch it from a public server.
+- Body: `title` and `description` joined by a newline, cut to 1024 characters with an ellipsis. Button: the first `link` action with text and an `https` `uri`; its text is cut to 20 characters.
+- A card with no usable link action is sent as a plain text message (title, description and the first `uri`, if any).
+- If Meta rejects a message that has an image header, it is retried once without the header. This logs `[WHATSAPP_CARDS] image header rejected, retrying without it http_status=... meta_error_code=...`, never the image URL, the phone number or the text.
+- The Chatwoot message's `source_id` is the id of the first WhatsApp message sent, so delivery status updates still map to it. Like other session messages, cards need an open 24-hour window.
+
+Source: Meta, [Interactive CTA URL messages](https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/interactive-cta-url-messages/).
+
 ## Locked contact attributes
 
 Contact custom attributes whose key starts with `shekel_` belong to the Shailoq gateway
